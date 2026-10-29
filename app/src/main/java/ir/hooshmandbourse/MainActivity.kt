@@ -22,11 +22,15 @@ data class Share(
     val value: Double, val buyIVol: Double, val sellIVol: Double,
     val buyICount: Double, val sellICount: Double,
     var fiveDayReturn: Double = 0.0, var volumeRatio: Double = 0.0,
+    var sma20: Double = 0.0, var sma50: Double = 0.0, var rsi14: Double = 0.0,
+    var macdBullish: Boolean = false, var weeklyTrend: Boolean = false,
+    var breakout20: Boolean = false, var historyReady: Boolean = false,
+    var clientDataReady: Boolean = false,
     var score: Int = 0, var reasons: List<String> = emptyList()
 ) {
     val netRetailValue: Double get() = (buyIVol - sellIVol) * close
     val buyerPower: Double get() = if (sellICount > 0 && buyICount > 0)
-        (buyIVol / buyICount) / max(1.0, sellIVol / sellICount) else 0.0
+        (buyIVol / buyICount) / (sellIVol / sellICount) else 0.0
 }
 
 class MainActivity : Activity() {
@@ -115,29 +119,59 @@ class MainActivity : Activity() {
                     )
                 }.toMutableList()
                 if (candidates.isEmpty()) throw Exception("دیده‌بان جایگزین TSETMC نیز نمادی برنگرداند؛ احتمالاً دسترسی شبکه یا سرویس بازار محدود است.")
-                // Avoid thousands of per-symbol requests: fetch history for the 35 most liquid candidates only.
+                // Fetch enough sessions to assess the medium-term trend, not just a five-day bounce.
                 val liquid = candidates.sortedByDescending { it.value }.take(35)
                 for (s in liquid) {
+                    s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 && s.buyICount > 0 && s.sellICount > 0
                     try {
-                        val history = getJson("https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceDailyList/${s.code}/30")
+                        val history = getJson("https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceDailyList/${s.code}/80")
                         val rows = findArray(history, "closingPriceDaily")
-                        if (rows != null && rows.length() >= 6) {
-                            val recent = rows.optJSONObject(0) ?: JSONObject()
-                            val older = rows.optJSONObject(min(4, rows.length() - 1)) ?: JSONObject()
-                            val r = firstNum(recent, "pClosing", "pc")
-                            val old = firstNum(older, "pClosing", "pc")
-                            if (old > 0) s.fiveDayReturn = (r / old - 1.0) * 100.0
-                            val volumes = ArrayList<Double>()
-                            for (j in 1 until min(21, rows.length())) {
-                                val v = firstNum(rows.optJSONObject(j) ?: JSONObject(), "qTotTran5J", "volume")
-                                if (v > 0) volumes.add(v)
+                        if (rows != null && rows.length() >= 55) {
+                            val daily = (0 until rows.length()).mapNotNull { i ->
+                                rows.optJSONObject(i)?.let { row ->
+                                    val c = firstNum(row, "pClosing", "pc")
+                                    if (c > 0) row else null
+                                }
                             }
-                            val avg = volumes.average()
-                            if (avg > 0) s.volumeRatio = s.volume / avg
+                            val closesNewestFirst = daily.map { firstNum(it, "pClosing", "pc") }
+                            if (closesNewestFirst.size >= 55) {
+                                val closes = closesNewestFirst.reversed()
+                                val latest = closes.last()
+                                s.sma20 = closes.takeLast(20).average()
+                                s.sma50 = closes.takeLast(50).average()
+                                val fiveAgo = closes[closes.size - 6]
+                                if (fiveAgo > 0) s.fiveDayReturn = (latest / fiveAgo - 1.0) * 100.0
+                                val weekly = closesNewestFirst.filterIndexed { index, _ -> index % 5 == 0 }.take(5)
+                                s.weeklyTrend = weekly.size >= 3 && weekly[0] > weekly[1] && weekly[1] > weekly[2]
+                                val gains = ArrayList<Double>()
+                                val losses = ArrayList<Double>()
+                                for (i in closes.size - 14 until closes.size) {
+                                    val change = closes[i] - closes[i - 1]
+                                    gains.add(max(0.0, change))
+                                    losses.add(max(0.0, -change))
+                                }
+                                val avgGain = gains.average()
+                                val avgLoss = losses.average()
+                                s.rsi14 = if (avgLoss == 0.0) 100.0 else 100.0 - (100.0 / (1.0 + avgGain / avgLoss))
+                                val volumes = (1 until min(21, daily.size)).mapNotNull { i ->
+                                    val v = firstNum(daily[i], "qTotTran5J", "volume")
+                                    if (v > 0) v else null
+                                }
+                                val avgVol = volumes.average()
+                                if (avgVol > 0) s.volumeRatio = s.volume / avgVol
+                                val priorHigh = daily.drop(1).take(20).maxOfOrNull { firstNum(it, "priceMax", "pmax") } ?: 0.0
+                                s.breakout20 = priorHigh > 0 && s.close >= priorHigh
+                                val ema12 = ema(closes, 12)
+                                val ema26 = ema(closes, 26)
+                                val macdLine = ema12 - ema26
+                                val signalLine = macdSignal(closes)
+                                s.macdBullish = macdLine > signalLine
+                                s.historyReady = s.sma20 > 0 && s.sma50 > 0 && s.rsi14 > 0
+                            }
                         }
-                    } catch (_: Exception) { /* history may be temporarily unavailable */ }
+                    } catch (_: Exception) { /* missing history must not be treated as a buy signal */ }
                 }
-                val scored = liquid.map { score(it) }.filter { it.score >= 55 }
+                val scored = liquid.map { score(it) }.filter { isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
                 runOnUiThread {
                     render(scored, candidates.size)
@@ -160,20 +194,52 @@ class MainActivity : Activity() {
         val why = ArrayList<String>()
         val totalRetail = s.buyIVol + s.sellIVol
         val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
-        if (netPct >= 20) { p += 20; why.add("ورود خالص پول حقیقی") }
-        else if (netPct >= 5) { p += 10; why.add("برتری نسبی خرید حقیقی") }
-        if (s.buyerPower >= 1.5) { p += 15; why.add("قدرت خریدار حقیقی بالا") }
-        else if (s.buyerPower >= 1.1) { p += 8; why.add("قدرت خریدار بهتر از فروشنده") }
-        if (s.volumeRatio >= 2.0) { p += 15; why.add("حجم بیش از دو برابر میانگین") }
-        else if (s.volumeRatio >= 1.3) { p += 8; why.add("افزایش حجم معاملات") }
-        if (s.fiveDayReturn in 1.0..12.0) { p += 15; why.add("روند مثبت پنج‌روزه") }
-        else if (s.fiveDayReturn > 0) { p += 7; why.add("بازده مثبت کوتاه‌مدت") }
-        if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 10; why.add("قیمت پایانی و آخرین معامله مثبت") }
-        if (s.baseVolume > 0 && s.volume >= s.baseVolume) { p += 10; why.add("حجم بالاتر از حجم مبنا") }
-        if (s.value > 0) p += 5
-        s.score = p
+        if (s.historyReady && s.close > s.sma20 && s.sma20 > s.sma50) { p += 20; why.add("روند میان‌مدت صعودی: قیمت بالای میانگین ۲۰ و میانگین ۲۰ بالای ۵۰") }
+        if (s.rsi14 in 50.0..68.0) { p += 10; why.add("قدرت نسبی مناسب بدون ورود به محدوده اشباع خرید") }
+        if (s.macdBullish) { p += 10; why.add("شتاب صعودی MACD") }
+        if (s.weeklyTrend) { p += 10; why.add("تأیید روند هفتگی") }
+        if (netPct >= 20) { p += 15; why.add("ورود خالص قابل‌توجه پول حقیقی") }
+        else if (netPct >= 8) { p += 10; why.add("برتری خرید حقیقی") }
+        if (s.buyerPower >= 1.5) { p += 10; why.add("قدرت خریدار حقیقی بالا") }
+        else if (s.buyerPower >= 1.15) { p += 6; why.add("قدرت خریدار بهتر از فروشنده") }
+        if (s.volumeRatio in 1.3..3.5) { p += 10; why.add("افزایش حجم معقول نسبت به میانگین") }
+        if (s.breakout20) { p += 5; why.add("عبور قیمت پایانی از سقف ۲۰ روزه") }
+        if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 5; why.add("تثبیت قیمت پایانی و آخرین معامله در محدوده مثبت") }
+        if (s.baseVolume > 0 && s.volume >= s.baseVolume) { p += 5; why.add("حجم بالاتر از حجم مبنا") }
+        if (s.value >= 5_000_000_000.0) { p += 5; why.add("ارزش معاملات روزانه مناسب") }
+        if (s.rsi14 > 72.0) { p = min(p, 55); why.add("هشدار: RSI وارد محدوده داغ شده") }
+        s.score = min(100, p)
         s.reasons = why
         return s
+    }
+
+    private fun isBuyCandidate(s: Share): Boolean {
+        val totalRetail = s.buyIVol + s.sellIVol
+        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
+        return s.historyReady && s.clientDataReady &&
+            s.close > s.sma20 && s.sma20 > s.sma50 &&
+            s.weeklyTrend && s.rsi14 in 50.0..70.0 &&
+            s.macdBullish && s.volumeRatio >= 1.2 &&
+            netPct >= 5.0 && s.buyerPower >= 1.1 &&
+            s.value >= 5_000_000_000.0 && s.score >= 70
+    }
+
+    private fun ema(values: List<Double>, period: Int): Double {
+        if (values.size < period) return 0.0
+        val k = 2.0 / (period + 1.0)
+        var result = values.take(period).average()
+        for (i in period until values.size) result = values[i] * k + result * (1.0 - k)
+        return result
+    }
+
+    private fun macdSignal(closesOldestFirst: List<Double>): Double {
+        if (closesOldestFirst.size < 35) return 0.0
+        val macdValues = ArrayList<Double>()
+        for (end in 26..closesOldestFirst.size) {
+            val slice = closesOldestFirst.take(end)
+            macdValues.add(ema(slice, 12) - ema(slice, 26))
+        }
+        return ema(macdValues, 9)
     }
 
     private fun render(list: List<Share>, scanned: Int) {
@@ -194,6 +260,7 @@ class MainActivity : Activity() {
             card.addView(tv("ورود خالص پول حقیقی: ${formatMoney(s.netRetailValue)} ریال", 13f))
             card.addView(tv("قدرت خریدار/فروشنده: ${"%.2f".format(Locale.US, s.buyerPower)}", 13f))
             card.addView(tv("تغییر پنج‌روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪  •  نسبت حجم: ${"%.1f".format(Locale.US, s.volumeRatio)}", 13f))
+            card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}  •  میانگین ۲۰روزه: ${formatMoney(s.sma20)}  •  میانگین ۵۰روزه: ${formatMoney(s.sma50)}", 12f))
             card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 13f))
             card.addView(tv("این رتبه‌بندی غربالگری اولیه است؛ پیش از معامله، نمودار هفتگی، اطلاعیه‌ها و وضعیت صف/نقدشوندگی را بررسی کن.", 12f, Color.rgb(130, 80, 0)))
             val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
@@ -215,7 +282,7 @@ class MainActivity : Activity() {
             val cols = line.trim().split(",")
             if (cols.size < 16) continue
             val code = cols[0].trim()
-            val symbol = cols[2].trim()
+            val symbol = cols[2].trim().removeSuffix("3").trim()
             if (code.isBlank() || symbol.isBlank()) continue
             val close = cols[6].toDoubleOrNull() ?: 0.0
             val last = cols[7].toDoubleOrNull() ?: 0.0
