@@ -106,10 +106,12 @@ class MainActivity : Activity() {
                     val code = firstString(o, "insCode", "InsCode", "instrumentCode")
                     if (code.isNotBlank()) clients[code] = o
                 }
+                if (marketRows.length() == 0) throw Exception("فهرست بازار خالی است؛ سرویس TSETMC داده‌ای برنگرداند.")
                 val candidates = ArrayList<Share>()
                 for (i in 0 until marketRows.length()) {
-                    val o = marketRows.optJSONObject(i) ?: continue
-                    val code = firstString(o, "insCode", "InsCode")
+                    val source = marketRows.optJSONObject(i) ?: continue
+                    val o = flattenMarketRow(source)
+                    val code = firstString(o, "insCode", "InsCode", "instrumentCode")
                     val symbol = firstString(o, "lVal18AFC", "symbol", "Symbol", "lVal30")
                     if (code.isBlank() || symbol.isBlank()) continue
                     val close = firstNum(o, "pc", "pClosing", "close")
@@ -126,6 +128,7 @@ class MainActivity : Activity() {
                         firstNum(c, "buy_CountI"), firstNum(c, "sell_CountI")
                     ))
                 }
+                if (candidates.isEmpty()) throw Exception("پاسخ بازار دریافت شد، اما مشخصات نمادها و قیمت‌ها از آن استخراج نشد. احتمالاً ساختار پاسخ TSETMC تغییر کرده است.")
                 // Avoid thousands of per-symbol requests: fetch history for the 35 most liquid candidates only.
                 val liquid = candidates.sortedByDescending { it.value }.take(35)
                 for (s in liquid) {
@@ -229,16 +232,44 @@ class MainActivity : Activity() {
         } finally { conn.disconnect() }
     }
 
+    // Market-watch records commonly contain instrument and closingPrice as nested objects.
+    // Flatten nested fields so symbol, instrument code and prices can be read consistently.
+    private fun flattenMarketRow(source: JSONObject): JSONObject {
+        val result = JSONObject()
+        val keys = source.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = source.opt(key)
+            if (value !is JSONObject && value !is JSONArray) result.put(key, value)
+        }
+        val nestedKeys = source.keys()
+        while (nestedKeys.hasNext()) {
+            val nestedValue = source.opt(nestedKeys.next())
+            if (nestedValue is JSONObject) {
+                val childKeys = nestedValue.keys()
+                while (childKeys.hasNext()) {
+                    val childKey = childKeys.next()
+                    val childValue = nestedValue.opt(childKey)
+                    if (!result.has(childKey) || result.opt(childKey) == JSONObject.NULL ||
+                        result.opt(childKey).toString() == "0" || result.opt(childKey).toString().isBlank()) {
+                        result.put(childKey, childValue)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     private fun findArray(root: JSONObject, key: String): JSONArray? {
-        val direct = root.optJSONArray(key)
-        if (direct != null) return direct
         val keys = root.keys()
         while (keys.hasNext()) {
-            val v = root.opt(keys.next())
-            if (v is JSONObject) findArray(v, key)?.let { return it }
-            if (v is JSONArray) {
-                for (i in 0 until v.length()) {
-                    val child = v.optJSONObject(i) ?: continue
+            val currentKey = keys.next()
+            val value = root.opt(currentKey)
+            if (currentKey.equals(key, ignoreCase = true) && value is JSONArray) return value
+            if (value is JSONObject) findArray(value, key)?.let { return it }
+            if (value is JSONArray) {
+                for (i in 0 until value.length()) {
+                    val child = value.optJSONObject(i) ?: continue
                     findArray(child, key)?.let { return it }
                 }
             }
