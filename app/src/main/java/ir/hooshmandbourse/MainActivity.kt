@@ -95,9 +95,8 @@ class MainActivity : Activity() {
         status.text = "در حال دریافت داده‌های بازار از TSETMC…"
         pool.execute {
             try {
-                val marketJson = getJson("https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&paperTypes[0]=1&paperTypes[1]=2&paperTypes[2]=3&paperTypes[3]=4&paperTypes[4]=5&paperTypes[5]=6&paperTypes[6]=7&paperTypes[7]=8&paperTypes[8]=9&withBestLimits=false&hEven=0&RefID=0")
-                val marketRows = findArray(marketJson, "marketwatch")
-                    ?: throw Exception("پاسخ دیده‌بان بازار ساختار مورد انتظار را ندارد.")
+                // The CDN GetMarketWatch endpoint can return an empty marketwatch array.
+                // Use the legacy full-market snapshot instead; its rows are documented CSV-like records.
                 val clientJson = getJson("https://cdn.tsetmc.com/api/ClientType/GetClientTypeAll")
                 val clientRows = findArray(clientJson, "clientTypeAllDto") ?: JSONArray()
                 val clients = HashMap<String, JSONObject>()
@@ -106,29 +105,14 @@ class MainActivity : Activity() {
                     val code = firstString(o, "insCode", "InsCode", "instrumentCode")
                     if (code.isNotBlank()) clients[code] = o
                 }
-                if (marketRows.length() == 0) throw Exception("فهرست بازار خالی است؛ سرویس TSETMC داده‌ای برنگرداند.")
-                val candidates = ArrayList<Share>()
-                for (i in 0 until marketRows.length()) {
-                    val source = marketRows.optJSONObject(i) ?: continue
-                    val o = flattenMarketRow(source)
-                    val code = firstString(o, "insCode", "InsCode", "instrumentCode")
-                    val symbol = firstString(o, "lVal18AFC", "symbol", "Symbol", "lVal30")
-                    if (code.isBlank() || symbol.isBlank()) continue
-                    val close = firstNum(o, "pc", "pClosing", "close")
-                    val last = firstNum(o, "pl", "pDrCotVal", "last")
-                    val yday = firstNum(o, "py", "priceYesterday", "yesterday")
-                    val vol = firstNum(o, "qTotTran5J", "volume", "vol")
-                    val base = firstNum(o, "baseVol", "baseVolume")
-                    val value = firstNum(o, "qTotCap", "value")
-                    if (close <= 0 || vol <= 0 || value <= 0) continue
-                    val c = clients[code] ?: JSONObject()
-                    candidates.add(Share(
-                        code, symbol, last, close, yday, vol, base, value,
+                val candidates = loadLegacyMarketRows().map { s ->
+                    val c = clients[s.code] ?: JSONObject()
+                    s.copyClientData(
                         firstNum(c, "buy_I_Volume"), firstNum(c, "sell_I_Volume"),
                         firstNum(c, "buy_CountI"), firstNum(c, "sell_CountI")
-                    ))
-                }
-                if (candidates.isEmpty()) throw Exception("پاسخ بازار دریافت شد، اما مشخصات نمادها و قیمت‌ها از آن استخراج نشد. احتمالاً ساختار پاسخ TSETMC تغییر کرده است.")
+                    )
+                }.toMutableList()
+                if (candidates.isEmpty()) throw Exception("دیده‌بان جایگزین TSETMC نیز نمادی برنگرداند؛ احتمالاً دسترسی شبکه یا سرویس بازار محدود است.")
                 // Avoid thousands of per-symbol requests: fetch history for the 35 most liquid candidates only.
                 val liquid = candidates.sortedByDescending { it.value }.take(35)
                 for (s in liquid) {
@@ -213,6 +197,56 @@ class MainActivity : Activity() {
             val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
             content.addView(card, lp)
         }
+    }
+
+
+    // Reads the legacy TSETMC MarketWatch snapshot. The third @ section contains
+    // semicolon-separated rows: insCode, ISIN, symbol, name, time, pf, pc, pl,
+    // trades, volume, value, low, high, yesterday, EPS, baseVolume, ...
+    private fun loadLegacyMarketRows(): List<Share> {
+        val raw = getText("https://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0")
+        val sections = raw.split("@")
+        if (sections.size < 3) throw Exception("ساختار پاسخ دیده‌بان جایگزین معتبر نیست.")
+        val rows = sections[2].split(";")
+        val result = ArrayList<Share>()
+        for (line in rows) {
+            val cols = line.trim().split(",")
+            if (cols.size < 16) continue
+            val code = cols[0].trim()
+            val symbol = cols[2].trim()
+            if (code.isBlank() || symbol.isBlank()) continue
+            val close = cols[6].toDoubleOrNull() ?: 0.0
+            val last = cols[7].toDoubleOrNull() ?: 0.0
+            val volume = cols[9].toDoubleOrNull() ?: 0.0
+            val value = cols[10].toDoubleOrNull() ?: 0.0
+            val yesterday = cols[13].toDoubleOrNull() ?: 0.0
+            val baseVolume = cols[15].toDoubleOrNull() ?: 0.0
+            if (close <= 0.0 || volume <= 0.0 || value <= 0.0) continue
+            result.add(Share(code, symbol, last, close, yesterday, volume, baseVolume, value, 0.0, 0.0, 0.0, 0.0))
+        }
+        return result
+    }
+
+    private fun Share.copyClientData(buyVol: Double, sellVol: Double, buyCount: Double, sellCount: Double): Share =
+        Share(code, symbol, last, close, yesterday, volume, baseVolume, value,
+            buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio, score, reasons)
+
+    private fun getText(url: String): String {
+        val conn = (URL(url).openConnection() as HttpURLConnection)
+        conn.connectTimeout = 15000
+        conn.readTimeout = 20000
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+        conn.setRequestProperty("Accept", "text/plain,*/*")
+        try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream.bufferedReader().use { it.readText() }
+            if (code !in 200..299) throw Exception("HTTP $code در دریافت دیده‌بان")
+            if (body.contains("دسترسی شما") || body.contains("مسدود") || body.contains("General Error Detected"))
+                throw Exception("دسترسی به دیده‌بان TSETMC مسدود شده است")
+            return body
+        } finally { conn.disconnect() }
     }
 
     private fun getJson(url: String): JSONObject {
