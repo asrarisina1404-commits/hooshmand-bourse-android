@@ -97,8 +97,10 @@ class MainActivity : Activity() {
             try {
                 // The CDN GetMarketWatch endpoint can return an empty marketwatch array.
                 // Use the legacy full-market snapshot instead; its rows are documented CSV-like records.
-                val clientJson = getJson("https://cdn.tsetmc.com/api/ClientType/GetClientTypeAll")
-                val clientRows = findArray(clientJson, "clientTypeAllDto") ?: JSONArray()
+                val clientRows = try {
+                    val clientJson = getJson("https://cdn.tsetmc.com/api/ClientType/GetClientTypeAll")
+                    findArray(clientJson, "clientTypeAllDto") ?: JSONArray()
+                } catch (_: Exception) { JSONArray() }
                 val clients = HashMap<String, JSONObject>()
                 for (i in 0 until clientRows.length()) {
                     val o = clientRows.optJSONObject(i) ?: continue
