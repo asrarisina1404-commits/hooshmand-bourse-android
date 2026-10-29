@@ -223,6 +223,12 @@ class MainActivity : Activity() {
             val value = cols[10].toDoubleOrNull() ?: 0.0
             val yesterday = cols[13].toDoubleOrNull() ?: 0.0
             val baseVolume = cols[15].toDoubleOrNull() ?: 0.0
+            // TSETMC MarketWatchInit columns: flow=17, yVal=22.
+            // Keep only ordinary shares (yVal=300) listed on TSE/IFB (flow=1 or 2).
+            // This excludes ETFs/funds, rights, options, bonds and other instruments.
+            val flow = cols.getOrNull(17)?.toIntOrNull() ?: -1
+            val yVal = cols.getOrNull(22)?.toIntOrNull() ?: -1
+            if (yVal != 300 || flow !in setOf(1, 2)) continue
             if (close <= 0.0 || volume <= 0.0 || value <= 0.0) continue
             result.add(Share(code, symbol, last, close, yesterday, volume, baseVolume, value, 0.0, 0.0, 0.0, 0.0))
         }
