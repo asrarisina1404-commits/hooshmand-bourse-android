@@ -376,14 +376,16 @@ class MainActivity : Activity() {
     private fun isReadyForEntry(s: Share): Boolean {
         val totalRetail = s.buyIValue + s.sellIValue
         val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else -100.0
+        // Pre-breakout watch state: deliberately looser than a buy signal.
+        // It identifies candidates near resistance; it never authorizes an entry.
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 && s.weeklyTrend &&
-            s.rsi14 in 48.0..68.0 && s.macdBullish &&
-            s.volumeRatio >= 1.2 && !s.breakout20 &&
+            s.rsi14 in 45.0..68.0 && s.macdBullish &&
+            s.volumeRatio >= 1.0 && !s.breakout20 &&
             s.adx14 >= 15.0 && s.obvRising && s.atr14Pct in 0.5..8.0 &&
-            s.resistance > 0 && s.close >= s.resistance * 0.97 &&
-            netPct >= 5.0 && s.buyerPower in 1.1..3.0 &&
-            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0
+            s.resistance > 0 && s.close >= s.resistance * 0.95 &&
+            netPct >= 3.0 && s.buyerPower in 1.05..3.0 &&
+            s.value >= 5_000_000_000.0 && s.rewardRisk >= 1.5
     }
 
     private fun calculateAtrPercent(highs: List<Double>, lows: List<Double>, closes: List<Double>): Double {
@@ -572,11 +574,26 @@ class MainActivity : Activity() {
             card.addView(tv("نسبت سود به زیان: قابل محاسبه نیست (نه ۰ به‌عنوان نسبت واقعی).", 11f, amber))
         }
         card.addView(tv("هدف و حد ضرر تخمینی‌اند؛ شکاف قیمت، صف و کارمزد می‌تواند نسبت واقعی را تغییر دهد.", 11f, amber))
-        if (label != "خرید معتبر") {
-            val blockers = entryBlockers(s)
-            card.addView(tv("چرا هنوز خرید نکنیم؟", 14f, amber, true))
+        if (label == "آماده ورود") {
+            card.addView(tv("شرط فعال‌شدن ورود (هنوز سیگنال خرید نیست):", 14f, amber, true))
+            if (s.entryTrigger > 0 && s.close < s.entryTrigger) {
+                card.addView(tv("• قیمت پایانی باید بالاتر از تریگر شکست ${formatMoney(s.entryTrigger)} بسته شود.", 12f, muted))
+            }
+            if (s.entryTrigger > 0 && s.last < s.entryTrigger) {
+                card.addView(tv("• آخرین معامله نیز باید بالای تریگر بماند؛ از شکست لحظه‌ای پرهیز شود.", 12f, muted))
+            }
+            if (s.close < s.last * 0.995) {
+                card.addView(tv("• تثبیت قیمت پایانی لازم است؛ فعلاً آخرین معامله تأیید نشده.", 12f, muted))
+            }
+            if (s.rewardRisk < 2.0) {
+                card.addView(tv("• نسبت سود به زیان هنوز به معیار خرید معتبر (حداقل ۲) نرسیده است.", 12f, muted))
+            }
+            card.addView(tv("پس از شکست مقاومت، تثبیت قیمت و باقی‌ماندن نسبت سود به زیان در سطح مناسب، دوباره تحلیل کن.", 12f, amber))
+        } else if (label != "خرید معتبر") {
+            val blockers = entryBlockers(s).take(3)
+            card.addView(tv("مهم‌ترین موانع بررسی:", 14f, amber, true))
             if (blockers.isEmpty()) {
-                card.addView(tv("مانع اصلی در داده‌های فعلی دیده نشد؛ با این حال تا تأیید نهایی شکست و تثبیت، ورود قطعی نیست.", 12f, muted))
+                card.addView(tv("مانع اصلی در داده‌های فعلی دیده نشد؛ این وضعیت به‌تنهایی مجوز خرید نیست.", 12f, muted))
             } else {
                 blockers.forEach { reason -> card.addView(tv("• $reason", 12f, muted)) }
             }
