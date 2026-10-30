@@ -32,7 +32,8 @@ data class Share(
     var score: Int = 0, var reasons: List<String> = emptyList(),
     var atr14Pct: Double = 0.0, var adx14: Double = 0.0,
     var obvRising: Boolean = false, var bollingerPosition: Double = 0.0,
-    var buyIValue: Double = 0.0, var sellIValue: Double = 0.0
+    var buyIValue: Double = 0.0, var sellIValue: Double = 0.0,
+    var lastHistoryDate: String = ""
 ) {
     // Use the exchange-reported retail trade values; never estimate money flow from volume * close.
     val netRetailValue: Double get() = buyIValue - sellIValue
@@ -162,6 +163,7 @@ class MainActivity : Activity() {
                                 val fiveAgo = closes[closes.size - 6]
                                 if (fiveAgo > 0) s.fiveDayReturn = (latest / fiveAgo - 1.0) * 100.0
                                 // Build actual calendar-week closes from daily rows; ignore the still-forming latest week.
+                                s.lastHistoryDate = firstString(daily.firstOrNull() ?: JSONObject(), "dEven", "date", "tradeDate")
                                 s.weeklyTrend = calculateWeeklyTrend(daily)
                                 val gains = ArrayList<Double>()
                                 val losses = ArrayList<Double>()
@@ -280,23 +282,28 @@ class MainActivity : Activity() {
     // Aggregate daily records by their actual exchange date into calendar weeks.
     // The newest bucket is excluded because it may be an unfinished trading week.
     private fun calculateWeeklyTrend(rowsNewestFirst: List<JSONObject>): Boolean {
+        // Iranian trading week starts on Saturday. Group by actual Saturday date.
         val weekly = sortedMapOf<String, Double>()
-        val parser = java.text.SimpleDateFormat("yyyyMMdd", Locale.US)
-        parser.isLenient = false
+        val parser = java.text.SimpleDateFormat("yyyyMMdd", Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val keyFormat = java.text.SimpleDateFormat("yyyyMMdd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
         for (row in rowsNewestFirst.asReversed()) {
-            val rawDate = firstString(row, "dEven", "date", "tradeDate")
-                .filter { it.isDigit() }
+            val rawDate = firstString(row, "dEven", "date", "tradeDate").filter { it.isDigit() }
             if (rawDate.length < 8) continue
             val date = try { parser.parse(rawDate.substring(0, 8)) } catch (_: Exception) { null } ?: continue
-            val calendar = Calendar.getInstance(Locale.US)
+            val calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.US)
             calendar.time = date
-            val key = String.format(
-                Locale.US, "%04d-%02d",
-                calendar.get(Calendar.YEAR), calendar.get(Calendar.WEEK_OF_YEAR)
-            )
+            val daysSinceSaturday = (calendar.get(Calendar.DAY_OF_WEEK) - Calendar.SATURDAY + 7) % 7
+            calendar.add(Calendar.DAY_OF_MONTH, -daysSinceSaturday)
+            val key = keyFormat.format(calendar.time)
             val close = firstNum(row, "pClosing", "pc")
             if (close > 0.0) weekly[key] = close
         }
+        // Exclude the current, potentially unfinished Iranian trading week.
         val completedWeeks = weekly.values.toList().dropLast(1)
         if (completedWeeks.size < 3) return false
         val lastThree = completedWeeks.takeLast(3)
@@ -353,7 +360,8 @@ class MainActivity : Activity() {
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 &&
             s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
-            s.macdBullish && s.volumeRatio in 1.3..3.5 && s.breakout20 && s.close >= s.last * 0.995 &&
+            s.macdBullish && s.volumeRatio in 1.3..3.5 && s.breakout20 &&
+            s.close >= s.entryTrigger && s.last >= s.entryTrigger && s.close >= s.last * 0.995 &&
             s.adx14 >= 18.0 && s.adx14 <= 45.0 && s.obvRising &&
             s.atr14Pct in 0.5..7.5 && s.bollingerPosition in 0.35..1.05 &&
             netPct >= 8.0 && s.buyerPower in 1.1..2.5 &&
@@ -538,6 +546,7 @@ class MainActivity : Activity() {
         } else {
             card.addView(tv("ارزش معاملات حقیقی/تعداد خریداران معتبر نیست؛ جریان پول و قدرت خریدار قابل اتکا نیست.", 12f, amber))
         }
+        card.addView(tv("آخرین تاریخ سابقه: ${s.lastHistoryDate.ifBlank { "نامشخص" }}", 11f, muted))
         card.addView(tv("تغییر ۵روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪    |    حجم: ${"%.1f".format(Locale.US, s.volumeRatio)} برابر میانگین", 12f, muted))
         card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}    |    روند هفتگی: ${if (s.weeklyTrend) "صعودی" else "تأییدنشده"}    |    MACD: ${if (s.macdBullish) "مثبت" else "منفی"}", 12f, muted))
         card.addView(tv("ADX: ${"%.1f".format(Locale.US, s.adx14)}    |    ATR: ${"%.1f".format(Locale.US, s.atr14Pct)}٪    |    OBV: ${if (s.obvRising) "صعودی" else "تأییدنشده"}", 12f, muted))
@@ -617,7 +626,7 @@ class MainActivity : Activity() {
             sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
             historyReady, true, resistance, support, entryTrigger, stopLoss,
             targetPrice, rewardRisk, score, reasons, atr14Pct, adx14, obvRising,
-            bollingerPosition, buyValue, sellValue)
+            bollingerPosition, buyValue, sellValue, lastHistoryDate)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
