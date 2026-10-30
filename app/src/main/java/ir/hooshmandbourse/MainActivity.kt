@@ -31,11 +31,13 @@ data class Share(
     var targetPrice: Double = 0.0, var rewardRisk: Double = 0.0,
     var score: Int = 0, var reasons: List<String> = emptyList(),
     var atr14Pct: Double = 0.0, var adx14: Double = 0.0,
-    var obvRising: Boolean = false, var bollingerPosition: Double = 0.0
+    var obvRising: Boolean = false, var bollingerPosition: Double = 0.0,
+    var buyIValue: Double = 0.0, var sellIValue: Double = 0.0
 ) {
-    val netRetailValue: Double get() = (buyIVol - sellIVol) * close
-    val buyerPower: Double get() = if (sellICount > 0 && buyICount > 0)
-        (buyIVol / buyICount) / (sellIVol / sellICount) else 0.0
+    // Use the exchange-reported retail trade values; never estimate money flow from volume * close.
+    val netRetailValue: Double get() = buyIValue - sellIValue
+    val buyerPower: Double get() = if (sellICount > 0 && buyICount > 0 && buyIValue > 0 && sellIValue > 0)
+        (buyIValue / buyICount) / (sellIValue / sellICount) else 0.0
 }
 
 class MainActivity : Activity() {
@@ -125,7 +127,9 @@ class MainActivity : Activity() {
                     val c = clients[s.code] ?: JSONObject()
                     s.copyClientData(
                         firstNum(c, "buy_I_Volume"), firstNum(c, "sell_I_Volume"),
-                        firstNum(c, "buy_CountI"), firstNum(c, "sell_CountI")
+                        firstNum(c, "buy_CountI"), firstNum(c, "sell_CountI"),
+                        firstNum(c, "buy_I_Value", "buy_IValue", "buyIValue"),
+                        firstNum(c, "sell_I_Value", "sell_IValue", "sellIValue")
                     )
                 }.toMutableList()
                 if (candidates.isEmpty()) throw Exception("دیده‌بان جایگزین TSETMC نیز نمادی برنگرداند؛ احتمالاً دسترسی شبکه یا سرویس بازار محدود است.")
@@ -136,6 +140,7 @@ class MainActivity : Activity() {
                     pool.submit {
                     // Reject thin or implausible client-type samples before using buyer power.
                     s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 &&
+                        s.buyIValue > 0 && s.sellIValue > 0 &&
                         s.buyICount >= 5 && s.sellICount >= 5 &&
                         s.buyerPower.isFinite() && s.buyerPower in 0.7..3.5
                     try {
@@ -244,8 +249,8 @@ class MainActivity : Activity() {
                 // If fewer than eight qualify, fill the remaining slots with the best-ranked
                 // analyzed shares, clearly labeled as preliminary review only (never a buy signal).
                 val qualifiedWatchlist = analyzed.filter {
-                    val totalRetail = it.buyIVol + it.sellIVol
-                    val netPct = if (totalRetail > 0) (it.buyIVol - it.sellIVol) / totalRetail * 100 else -100.0
+                    val totalRetail = it.buyIValue + it.sellIValue
+                    val netPct = if (totalRetail > 0) (it.buyIValue - it.sellIValue) / totalRetail * 100 else -100.0
                     it.historyReady && it.clientDataReady && it.score >= 45 &&
                         netPct >= 0.0 && it.buyerPower in 0.9..2.5 &&
                         it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
@@ -301,8 +306,8 @@ class MainActivity : Activity() {
     private fun score(s: Share): Share {
         var p = 0
         val why = ArrayList<String>()
-        val totalRetail = s.buyIVol + s.sellIVol
-        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
+        val totalRetail = s.buyIValue + s.sellIValue
+        val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else 0.0
         // Weighted score: trend 20, retail flow 20, volume 15,
         // breakout 15, momentum 10, liquidity 10, trade risk/reward 10.
         if (s.historyReady && s.close > s.sma20 && s.sma20 > s.sma50) { p += 10; why.add("روند روزانه میان‌مدت صعودی") }
@@ -343,8 +348,8 @@ class MainActivity : Activity() {
     }
 
     private fun isBuyCandidate(s: Share): Boolean {
-        val totalRetail = s.buyIVol + s.sellIVol
-        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
+        val totalRetail = s.buyIValue + s.sellIValue
+        val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else 0.0
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 &&
             s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
@@ -356,8 +361,8 @@ class MainActivity : Activity() {
     }
 
     private fun isReadyForEntry(s: Share): Boolean {
-        val totalRetail = s.buyIVol + s.sellIVol
-        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else -100.0
+        val totalRetail = s.buyIValue + s.sellIValue
+        val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else -100.0
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 && s.weeklyTrend &&
             s.rsi14 in 48.0..68.0 && s.macdBullish &&
@@ -472,6 +477,8 @@ class MainActivity : Activity() {
                 !isBuyCandidate(item) && !isReadyForEntry(item)
             addShareCard(item, idx + 1, if (qualified) "زیر نظر" else "بررسی اولیه؛ بدون تأیید", amber)
         }
+        content.addView(tv("ارزش خالص پول حقیقی فقط با فیلد ارزش خرید/فروش حقیقی معتبر محاسبه می‌شود؛ در نبود آن، برنامه سیگنال خرید صادر نمی‌کند.", 12f, amber))
+        content.addView(tv("اندازه موقعیت: مبلغ ریسک مجاز ÷ فاصله قیمت ورود تا حد ضرر. تا تعیین سرمایه و ریسک مجاز، برنامه حجم خرید پیشنهادی نمی‌دهد.", 12f, amber))
         content.addView(tv("امتیاز ۱۰۰تایی رتبه‌بندی نسبی است و احتمال موفقیت یا تضمین سود نیست. بک‌تست آماری هنوز به داده تاریخی تعدیل‌شده و لحاظ صفوف و کارمزد نیاز دارد.", 12f, amber))
         content.addView(tv("سطوح حمایت و مقاومت، برآوردهای تکنیکال از داده‌های روزانه‌اند؛ قبل از معامله با نمودار و اطلاعیه‌ها تطبیق بده. حد ضرر قطعی یا تضمین‌شده نیست.", 12f, amber))
     }
@@ -493,8 +500,8 @@ class MainActivity : Activity() {
 
     private fun entryBlockers(s: Share): List<String> {
         val blockers = ArrayList<String>()
-        val totalRetail = s.buyIVol + s.sellIVol
-        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else -100.0
+        val totalRetail = s.buyIValue + s.sellIValue
+        val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else -100.0
         if (!s.historyReady) blockers.add("سابقه قیمتی کافی یا معتبر دریافت نشده است.")
         if (!(s.close > s.sma20 && s.sma20 > s.sma50)) blockers.add("روند میان‌مدت هنوز صعودیِ تأییدشده نیست (قیمت و میانگین‌های ۲۰/۵۰).")
         if (!s.weeklyTrend) blockers.add("روند هفتگی صعودی تأیید نشده است.")
@@ -526,7 +533,11 @@ class MainActivity : Activity() {
             elevation = 3f
         }
         card.addView(tv("$index. ${s.symbol}     ${s.score}/100  •  $label", 18f, labelColor, true))
-        card.addView(tv("پول خالص حقیقی: ${formatMoney(s.netRetailValue)} ریال    |    قدرت خریدار: ${"%.2f".format(Locale.US, s.buyerPower)}", 12f, Color.WHITE))
+        if (s.clientDataReady) {
+            card.addView(tv("ارزش خالص خرید حقیقی: ${formatMoney(s.netRetailValue)} ریال    |    قدرت سرانه خرید: ${"%.2f".format(Locale.US, s.buyerPower)}", 12f, Color.WHITE))
+        } else {
+            card.addView(tv("ارزش معاملات حقیقی/تعداد خریداران معتبر نیست؛ جریان پول و قدرت خریدار قابل اتکا نیست.", 12f, amber))
+        }
         card.addView(tv("تغییر ۵روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪    |    حجم: ${"%.1f".format(Locale.US, s.volumeRatio)} برابر میانگین", 12f, muted))
         card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}    |    روند هفتگی: ${if (s.weeklyTrend) "صعودی" else "تأییدنشده"}    |    MACD: ${if (s.macdBullish) "مثبت" else "منفی"}", 12f, muted))
         card.addView(tv("ADX: ${"%.1f".format(Locale.US, s.adx14)}    |    ATR: ${"%.1f".format(Locale.US, s.atr14Pct)}٪    |    OBV: ${if (s.obvRising) "صعودی" else "تأییدنشده"}", 12f, muted))
@@ -597,12 +608,16 @@ class MainActivity : Activity() {
         return result
     }
 
-    private fun Share.copyClientData(buyVol: Double, sellVol: Double, buyCount: Double, sellCount: Double): Share =
+    private fun Share.copyClientData(
+        buyVol: Double, sellVol: Double, buyCount: Double, sellCount: Double,
+        buyValue: Double, sellValue: Double
+    ): Share =
         Share(code, symbol, last, close, yesterday, volume, baseVolume, value,
             buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio,
             sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
             historyReady, true, resistance, support, entryTrigger, stopLoss,
-            targetPrice, rewardRisk, score, reasons, atr14Pct, adx14, obvRising, bollingerPosition)
+            targetPrice, rewardRisk, score, reasons, atr14Pct, adx14, obvRising,
+            bollingerPosition, buyValue, sellValue)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
