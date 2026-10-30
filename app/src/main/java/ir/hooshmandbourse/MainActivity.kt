@@ -174,6 +174,10 @@ class MainActivity : Activity() {
                                 if (avgVol > 0) s.volumeRatio = s.volume / avgVol
                                 val priorRows = daily.drop(1).take(20)
                                 val priorHigh = priorRows.maxOfOrNull { firstNum(it, "priceMax", "pmax") } ?: 0.0
+                                // A separate 55-session ceiling is used as a real technical
+                                // objective; do not manufacture a 2R target from the stop distance.
+                                val priorRows55 = daily.drop(1).take(55)
+                                val nextResistance = priorRows55.maxOfOrNull { firstNum(it, "priceMax", "pmax") } ?: 0.0
                                 val recentRows = daily.drop(1).take(10)
                                 val recentLow = recentRows.mapNotNull { row ->
                                     val low = firstNum(row, "priceMin", "pmin")
@@ -198,10 +202,20 @@ class MainActivity : Activity() {
                                     (latest - lowerBand) / (upperBand - lowerBand) else 0.5
                                 s.breakout20 = priorHigh > 0 && s.close > priorHigh
                                 s.entryTrigger = if (priorHigh > 0) priorHigh * 1.005 else 0.0
-                                s.stopLoss = if (recentLow > 0) recentLow * 0.99 else 0.0
-                                if (s.entryTrigger > s.stopLoss && s.stopLoss > 0) {
-                                    s.targetPrice = s.entryTrigger + 2.0 * (s.entryTrigger - s.stopLoss)
-                                    s.rewardRisk = 2.0
+                                val atrDistance = latest * s.atr14Pct / 100.0
+                                val supportStop = if (recentLow > 0) recentLow * 0.99 else 0.0
+                                val atrStop = if (atrDistance > 0) s.entryTrigger - 2.0 * atrDistance else 0.0
+                                s.stopLoss = when {
+                                    supportStop > 0 && atrStop > 0 -> max(supportStop, atrStop)
+                                    supportStop > 0 -> supportStop
+                                    atrStop > 0 -> atrStop
+                                    else -> 0.0
+                                }
+                                s.targetPrice = if (nextResistance > s.entryTrigger * 1.01) nextResistance else 0.0
+                                if (s.entryTrigger > s.stopLoss && s.stopLoss > 0 && s.targetPrice > s.entryTrigger) {
+                                    s.rewardRisk = (s.targetPrice - s.entryTrigger) / (s.entryTrigger - s.stopLoss)
+                                } else {
+                                    s.rewardRisk = 0.0
                                 }
                                 val ema12 = ema(closes, 12)
                                 val ema26 = ema(closes, 26)
@@ -270,6 +284,8 @@ class MainActivity : Activity() {
         if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 5; why.add("تثبیت قیمت پایانی و آخرین معامله در محدوده مثبت") }
         if (s.baseVolume > 0 && s.volume >= s.baseVolume) { p += 5; why.add("حجم بالاتر از حجم مبنا") }
         if (s.value >= 5_000_000_000.0) { p += 5; why.add("ارزش معاملات روزانه مناسب") }
+        if (s.rewardRisk >= 2.0) { p += 5; why.add("هدف تکنیکالی واقعی حداقل دو برابر ریسک برآوردی است") }
+        else if (s.historyReady) { why.add("فاصله تا مقاومت بعدی برای نسبت سود به زیان ۲ کافی نیست") }
         if (s.adx14 >= 18.0 && s.adx14 <= 40.0) { p += 6; why.add("قدرت روند با ADX تأیید می‌شود") }
         else if (s.adx14 > 50.0) { p -= 4; why.add("هشدار: ADX بسیار بالا؛ احتمال دیررسیدن به روند") }
         if (s.obvRising) { p += 5; why.add("OBV صعودی؛ حجم با حرکت قیمت هم‌جهت است") }
@@ -452,7 +468,7 @@ class MainActivity : Activity() {
         if (s.buyerPower > 2.5) blockers.add("قدرت خریدار غیرعادی است (بیش از ۲٫۵) و باید دستی بررسی شود.")
         else if (s.buyerPower < 1.1) blockers.add("قدرت خریدار حقیقی برتری کافی ندارد.")
         if (s.value < 5_000_000_000.0) blockers.add("ارزش معاملات روزانه به حداقل نقدشوندگی تعیین‌شده نرسیده است.")
-        if (s.rewardRisk < 2.0) blockers.add("نسبت سود به زیان محاسباتی کمتر از ۲ نیست یا داده کافی ندارد.")
+        if (s.targetPrice <= s.entryTrigger || s.rewardRisk < 2.0) blockers.add("مقاومت بعدی فضای کافی برای نسبت سود به زیان حداقل ۱ به ۲ نمی‌دهد.")
         return blockers.distinct()
     }
 
@@ -472,8 +488,8 @@ class MainActivity : Activity() {
         if (s.resistance > 0) card.addView(tv("مقاومت: ${formatMoney(s.resistance)}    |    حمایت: ${formatMoney(s.support)}", 12f, Color.WHITE))
         if (s.entryTrigger > 0 && s.stopLoss > 0) {
             card.addView(tv("تریگر ورود: ${formatMoney(s.entryTrigger)}    |    حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
-            card.addView(tv("هدف ریسک‌محور محاسباتی ۲R: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان فرضی: ۱ به ۲", 12f, green, true))
-            card.addView(tv("هدف تکنیکالی مستقل: تعیین نشده؛ مقاومت بعدی باید جداگانه بررسی شود.", 11f, amber))
+            card.addView(tv("هدف تکنیکالی برآوردی از سقف ۵۵روزه: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان محاسباتی: ۱ به ${"%.2f".format(Locale.US, s.rewardRisk)}", 12f, green, true))
+            card.addView(tv("هدف و حد ضرر تخمینی‌اند؛ شکاف قیمت، صف و کارمزد می‌تواند نسبت واقعی را تغییر دهد.", 11f, amber))
         } else {
             card.addView(tv("سطوح ورود/حد ضرر به علت ناکافی بودن داده معتبر محاسبه نشد.", 12f, amber))
             card.addView(tv("هدف تکنیکالی: تعیین نشده است.", 11f, amber))
