@@ -29,7 +29,9 @@ data class Share(
     var resistance: Double = 0.0, var support: Double = 0.0,
     var entryTrigger: Double = 0.0, var stopLoss: Double = 0.0,
     var targetPrice: Double = 0.0, var rewardRisk: Double = 0.0,
-    var score: Int = 0, var reasons: List<String> = emptyList()
+    var score: Int = 0, var reasons: List<String> = emptyList(),
+    var atr14Pct: Double = 0.0, var adx14: Double = 0.0,
+    var obvRising: Boolean = false, var bollingerPosition: Double = 0.0
 ) {
     val netRetailValue: Double get() = (buyIVol - sellIVol) * close
     val buyerPower: Double get() = if (sellICount > 0 && buyICount > 0)
@@ -179,6 +181,21 @@ class MainActivity : Activity() {
                                 }.minOrNull() ?: 0.0
                                 s.resistance = priorHigh
                                 s.support = recentLow
+
+                                // Additional independent confirmation measures from daily OHLCV.
+                                val highs = daily.map { firstNum(it, "priceMax", "pmax") }.reversed()
+                                val lows = daily.map { firstNum(it, "priceMin", "pmin") }.reversed()
+                                val chronologicalVolumes = daily.map { firstNum(it, "qTotTran5J", "volume") }.reversed()
+                                s.atr14Pct = calculateAtrPercent(highs, lows, closes)
+                                s.adx14 = calculateAdx(highs, lows, closes)
+                                s.obvRising = isObvRising(closes, chronologicalVolumes)
+                                val last20 = closes.takeLast(20)
+                                val mean20 = last20.average()
+                                val sd20 = kotlin.math.sqrt(last20.map { (it - mean20) * (it - mean20) }.average())
+                                val lowerBand = mean20 - 2.0 * sd20
+                                val upperBand = mean20 + 2.0 * sd20
+                                s.bollingerPosition = if (upperBand > lowerBand)
+                                    (latest - lowerBand) / (upperBand - lowerBand) else 0.5
                                 s.breakout20 = priorHigh > 0 && s.close > priorHigh
                                 s.entryTrigger = if (priorHigh > 0) priorHigh * 1.005 else 0.0
                                 s.stopLoss = if (recentLow > 0) recentLow * 0.99 else 0.0
@@ -253,6 +270,14 @@ class MainActivity : Activity() {
         if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 5; why.add("تثبیت قیمت پایانی و آخرین معامله در محدوده مثبت") }
         if (s.baseVolume > 0 && s.volume >= s.baseVolume) { p += 5; why.add("حجم بالاتر از حجم مبنا") }
         if (s.value >= 5_000_000_000.0) { p += 5; why.add("ارزش معاملات روزانه مناسب") }
+        if (s.adx14 >= 18.0 && s.adx14 <= 40.0) { p += 6; why.add("قدرت روند با ADX تأیید می‌شود") }
+        else if (s.adx14 > 50.0) { p -= 4; why.add("هشدار: ADX بسیار بالا؛ احتمال دیررسیدن به روند") }
+        if (s.obvRising) { p += 5; why.add("OBV صعودی؛ حجم با حرکت قیمت هم‌جهت است") }
+        else if (s.historyReady) { p -= 3; why.add("OBV صعودی نیست؛ انباشت حجمی تأیید نشده") }
+        if (s.atr14Pct in 0.5..7.5) { p += 3; why.add("نوسان ATR در محدوده قابل مدیریت") }
+        else if (s.atr14Pct > 7.5) { p -= 5; why.add("هشدار: نوسان روزانه بالا بر اساس ATR") }
+        if (s.bollingerPosition in 0.35..0.95) { p += 3; why.add("موقعیت قیمت در باند بولینگر مناسب است") }
+        else if (s.bollingerPosition > 1.05) { p -= 5; why.add("هشدار: قیمت بیش از حد از باند بالایی بولینگر فاصله گرفته") }
         if (s.rsi14 > 72.0) { p = min(p, 55); why.add("هشدار: RSI وارد محدوده داغ شده") }
         s.score = min(100, p)
         s.reasons = why
@@ -265,7 +290,9 @@ class MainActivity : Activity() {
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 &&
             s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
-            s.macdBullish && s.volumeRatio >= 1.3 && s.breakout20 &&
+            s.macdBullish && s.volumeRatio in 1.3..3.5 && s.breakout20 &&
+            s.adx14 >= 18.0 && s.adx14 <= 45.0 && s.obvRising &&
+            s.atr14Pct in 0.5..7.5 && s.bollingerPosition in 0.35..1.05 &&
             netPct >= 8.0 && s.buyerPower in 1.1..2.5 &&
             s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 70
     }
@@ -277,9 +304,55 @@ class MainActivity : Activity() {
             s.close > s.sma20 && s.sma20 > s.sma50 && s.weeklyTrend &&
             s.rsi14 in 48.0..68.0 && s.macdBullish &&
             s.volumeRatio >= 1.2 && !s.breakout20 &&
+            s.adx14 >= 15.0 && s.obvRising && s.atr14Pct in 0.5..8.0 &&
             s.resistance > 0 && s.close >= s.resistance * 0.97 &&
             netPct >= 5.0 && s.buyerPower in 1.1..3.0 &&
             s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0
+    }
+
+    private fun calculateAtrPercent(highs: List<Double>, lows: List<Double>, closes: List<Double>): Double {
+        if (highs.size < 15 || lows.size != highs.size || closes.size != highs.size) return 0.0
+        val trueRanges = ArrayList<Double>()
+        for (i in max(1, highs.size - 14) until highs.size) {
+            val tr = max(highs[i] - lows[i], max(kotlin.math.abs(highs[i] - closes[i - 1]), kotlin.math.abs(lows[i] - closes[i - 1])))
+            if (tr > 0) trueRanges.add(tr)
+        }
+        val last = closes.lastOrNull() ?: return 0.0
+        return if (last > 0 && trueRanges.isNotEmpty()) trueRanges.average() / last * 100.0 else 0.0
+    }
+
+    private fun calculateAdx(highs: List<Double>, lows: List<Double>, closes: List<Double>): Double {
+        if (highs.size < 30 || lows.size != highs.size || closes.size != highs.size) return 0.0
+        val dxValues = ArrayList<Double>()
+        val start = max(1, highs.size - 28)
+        for (i in start until highs.size) {
+            val upMove = highs[i] - highs[i - 1]
+            val downMove = lows[i - 1] - lows[i]
+            val plusDm = if (upMove > downMove && upMove > 0) upMove else 0.0
+            val minusDm = if (downMove > upMove && downMove > 0) downMove else 0.0
+            val tr = max(highs[i] - lows[i], max(kotlin.math.abs(highs[i] - closes[i - 1]), kotlin.math.abs(lows[i] - closes[i - 1])))
+            if (tr <= 0) continue
+            val plusDi = 100.0 * plusDm / tr
+            val minusDi = 100.0 * minusDm / tr
+            val sum = plusDi + minusDi
+            if (sum > 0) dxValues.add(100.0 * kotlin.math.abs(plusDi - minusDi) / sum)
+        }
+        return if (dxValues.size >= 10) dxValues.takeLast(14).average() else 0.0
+    }
+
+    private fun isObvRising(closes: List<Double>, volumes: List<Double>): Boolean {
+        if (closes.size < 15 || volumes.size != closes.size) return false
+        var obv = 0.0
+        val series = ArrayList<Double>()
+        for (i in 1 until closes.size) {
+            obv += when {
+                closes[i] > closes[i - 1] -> volumes[i]
+                closes[i] < closes[i - 1] -> -volumes[i]
+                else -> 0.0
+            }
+            series.add(obv)
+        }
+        return series.size >= 11 && series.last() > series[series.size - 11]
     }
 
     private fun ema(values: List<Double>, period: Int): Double {
@@ -345,6 +418,10 @@ class MainActivity : Activity() {
         if (!s.weeklyTrend) blockers.add("روند هفتگی صعودی تأیید نشده است.")
         if (!s.macdBullish) blockers.add("MACD هنوز شتاب صعودی را تأیید نمی‌کند.")
         if (s.rsi14 !in 50.0..68.0) blockers.add("RSI خارج از محدوده مطلوب ۵۰ تا ۶۸ است.")
+        if (s.adx14 < 18.0) blockers.add("قدرت روند با ADX به حداقل ۱۸ نرسیده است.")
+        if (!s.obvRising) blockers.add("OBV افزایش انباشت حجمی را تأیید نمی‌کند.")
+        if (s.atr14Pct > 7.5) blockers.add("نوسان ATR بالاست و ریسک حد ضرر افزایش یافته است.")
+        if (s.bollingerPosition > 1.05) blockers.add("قیمت از باند بالایی بولینگر بیش از حد فاصله گرفته است.")
         if (s.volumeRatio < 1.3) blockers.add("حجم معاملات هنوز حداقل ۱٫۳ برابر میانگین نیست.")
         if (!s.breakout20) blockers.add("شکست معتبر سقف ۲۰ روزه هنوز رخ نداده است.")
         if (!s.clientDataReady) blockers.add("داده خریداران و فروشندگان حقیقی برای تأیید کافی/معتبر نیست.")
@@ -367,6 +444,8 @@ class MainActivity : Activity() {
         card.addView(tv("پول خالص حقیقی: ${formatMoney(s.netRetailValue)} ریال    |    قدرت خریدار: ${"%.2f".format(Locale.US, s.buyerPower)}", 12f, Color.WHITE))
         card.addView(tv("تغییر ۵روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪    |    حجم: ${"%.1f".format(Locale.US, s.volumeRatio)} برابر میانگین", 12f, muted))
         card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}    |    روند هفتگی: ${if (s.weeklyTrend) "صعودی" else "تأییدنشده"}    |    MACD: ${if (s.macdBullish) "مثبت" else "منفی"}", 12f, muted))
+        card.addView(tv("ADX: ${"%.1f".format(Locale.US, s.adx14)}    |    ATR: ${"%.1f".format(Locale.US, s.atr14Pct)}٪    |    OBV: ${if (s.obvRising) "صعودی" else "تأییدنشده"}", 12f, muted))
+        card.addView(tv("جایگاه باند بولینگر: ${"%.2f".format(Locale.US, s.bollingerPosition)}  (بالاتر از ۱ یعنی بالای باند)", 11f, muted))
         if (s.resistance > 0) card.addView(tv("مقاومت: ${formatMoney(s.resistance)}    |    حمایت: ${formatMoney(s.support)}", 12f, Color.WHITE))
         if (s.entryTrigger > 0 && s.stopLoss > 0) {
             card.addView(tv("تریگر ورود: ${formatMoney(s.entryTrigger)}    |    حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
@@ -431,7 +510,7 @@ class MainActivity : Activity() {
             buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio,
             sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
             historyReady, true, resistance, support, entryTrigger, stopLoss,
-            targetPrice, rewardRisk, score, reasons)
+            targetPrice, rewardRisk, score, reasons, atr14Pct, adx14, obvRising, bollingerPosition)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
