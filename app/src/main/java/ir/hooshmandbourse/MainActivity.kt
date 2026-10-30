@@ -205,7 +205,7 @@ class MainActivity : Activity() {
                     val totalRetail = it.buyIVol + it.sellIVol
                     val netPct = if (totalRetail > 0) (it.buyIVol - it.sellIVol) / totalRetail * 100 else -100.0
                     it.historyReady && it.clientDataReady && it.score >= 45 &&
-                        netPct >= 0.0 && it.buyerPower in 0.9..3.5 &&
+                        netPct >= 0.0 && it.buyerPower in 0.9..2.5 &&
                         it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
                 }.sortedByDescending { it.score }.take(8)
                 runOnUiThread {
@@ -236,8 +236,9 @@ class MainActivity : Activity() {
         if (netPct >= 20) { p += 15; why.add("ورود خالص قابل‌توجه پول حقیقی") }
         else if (netPct >= 8) { p += 10; why.add("برتری خرید حقیقی") }
         else if (netPct < 0) { p = max(0, p - 15); why.add("هشدار: خروج خالص پول حقیقی؛ امتیاز کاهشی اعمال شد") }
-        if (s.clientDataReady && s.buyerPower >= 1.5) { p += 10; why.add("قدرت خریدار حقیقی بالا") }
-        else if (s.clientDataReady && s.buyerPower >= 1.15) { p += 6; why.add("قدرت خریدار بهتر از فروشنده") }
+        if (s.clientDataReady && s.buyerPower in 1.15..2.5) { p += 6; why.add("قدرت خریدار بهتر از فروشنده و در محدوده قابل بررسی") }
+        else if (s.clientDataReady && s.buyerPower > 2.5) { why.add("هشدار: قدرت خریدار غیرعادی؛ احتمال اختلال نمونه یا تمرکز معاملات، نیازمند بررسی") }
+        else if (s.clientDataReady && s.buyerPower in 0.7..1.14) { why.add("قدرت خریدار برتری معناداری ندارد") }
         else if (!s.clientDataReady) { why.add("داده حقیقی/حقوقی کم‌حجم یا نامعتبر؛ قدرت خریدار قابل اتکا نیست") }
         if (s.volumeRatio in 1.3..3.5) { p += 10; why.add("افزایش حجم معقول نسبت به میانگین") }
         if (s.breakout20) { p += 5; why.add("عبور قیمت پایانی از سقف ۲۰ روزه") }
@@ -257,7 +258,7 @@ class MainActivity : Activity() {
             s.close > s.sma20 && s.sma20 > s.sma50 &&
             s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
             s.macdBullish && s.volumeRatio >= 1.3 && s.breakout20 &&
-            netPct >= 8.0 && s.buyerPower in 1.1..3.0 &&
+            netPct >= 8.0 && s.buyerPower in 1.1..2.5 &&
             s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 70
     }
 
@@ -323,6 +324,26 @@ class MainActivity : Activity() {
         content.addView(panel, lp)
     }
 
+    private fun entryBlockers(s: Share): List<String> {
+        val blockers = ArrayList<String>()
+        val totalRetail = s.buyIVol + s.sellIVol
+        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else -100.0
+        if (!s.historyReady) blockers.add("سابقه قیمتی کافی یا معتبر دریافت نشده است.")
+        if (!(s.close > s.sma20 && s.sma20 > s.sma50)) blockers.add("روند میان‌مدت هنوز صعودیِ تأییدشده نیست (قیمت و میانگین‌های ۲۰/۵۰).")
+        if (!s.weeklyTrend) blockers.add("روند هفتگی صعودی تأیید نشده است.")
+        if (!s.macdBullish) blockers.add("MACD هنوز شتاب صعودی را تأیید نمی‌کند.")
+        if (s.rsi14 !in 50.0..68.0) blockers.add("RSI خارج از محدوده مطلوب ۵۰ تا ۶۸ است.")
+        if (s.volumeRatio < 1.3) blockers.add("حجم معاملات هنوز حداقل ۱٫۳ برابر میانگین نیست.")
+        if (!s.breakout20) blockers.add("شکست معتبر سقف ۲۰ روزه هنوز رخ نداده است.")
+        if (!s.clientDataReady) blockers.add("داده خریداران و فروشندگان حقیقی برای تأیید کافی/معتبر نیست.")
+        if (netPct < 8.0) blockers.add("ورود خالص پول حقیقی به حداقل ۸٪ نرسیده است یا خروج پول ثبت شده.")
+        if (s.buyerPower > 2.5) blockers.add("قدرت خریدار غیرعادی است (بیش از ۲٫۵) و باید دستی بررسی شود.")
+        else if (s.buyerPower < 1.1) blockers.add("قدرت خریدار حقیقی برتری کافی ندارد.")
+        if (s.value < 5_000_000_000.0) blockers.add("ارزش معاملات روزانه به حداقل نقدشوندگی تعیین‌شده نرسیده است.")
+        if (s.rewardRisk < 2.0) blockers.add("نسبت سود به زیان محاسباتی کمتر از ۲ نیست یا داده کافی ندارد.")
+        return blockers.distinct()
+    }
+
     private fun addShareCard(s: Share, index: Int, label: String, labelColor: Int) {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -337,9 +358,20 @@ class MainActivity : Activity() {
         if (s.resistance > 0) card.addView(tv("مقاومت: ${formatMoney(s.resistance)}    |    حمایت: ${formatMoney(s.support)}", 12f, Color.WHITE))
         if (s.entryTrigger > 0 && s.stopLoss > 0) {
             card.addView(tv("تریگر ورود: ${formatMoney(s.entryTrigger)}    |    حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
-            card.addView(tv("هدف محاسباتی ۲R: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان: ۱ به ۲", 12f, green, true))
+            card.addView(tv("هدف ریسک‌محور محاسباتی ۲R: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان فرضی: ۱ به ۲", 12f, green, true))
+            card.addView(tv("هدف تکنیکالی مستقل: تعیین نشده؛ مقاومت بعدی باید جداگانه بررسی شود.", 11f, amber))
         } else {
             card.addView(tv("سطوح ورود/حد ضرر به علت ناکافی بودن داده معتبر محاسبه نشد.", 12f, amber))
+            card.addView(tv("هدف تکنیکالی: تعیین نشده است.", 11f, amber))
+        }
+        if (label != "خرید معتبر") {
+            val blockers = entryBlockers(s)
+            card.addView(tv("چرا هنوز خرید نکنیم؟", 14f, amber, true))
+            if (blockers.isEmpty()) {
+                card.addView(tv("مانع اصلی در داده‌های فعلی دیده نشد؛ با این حال تا تأیید نهایی شکست و تثبیت، ورود قطعی نیست.", 12f, muted))
+            } else {
+                blockers.forEach { reason -> card.addView(tv("• $reason", 12f, muted)) }
+            }
         }
         card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 12f, muted))
         val lp = LinearLayout.LayoutParams(-1, -2).apply {
