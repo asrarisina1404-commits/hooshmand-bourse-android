@@ -26,6 +26,9 @@ data class Share(
     var macdBullish: Boolean = false, var weeklyTrend: Boolean = false,
     var breakout20: Boolean = false, var historyReady: Boolean = false,
     var clientDataReady: Boolean = false,
+    var resistance: Double = 0.0, var support: Double = 0.0,
+    var entryTrigger: Double = 0.0, var stopLoss: Double = 0.0,
+    var targetPrice: Double = 0.0, var rewardRisk: Double = 0.0,
     var score: Int = 0, var reasons: List<String> = emptyList()
 ) {
     val netRetailValue: Double get() = (buyIVol - sellIVol) * close
@@ -38,8 +41,12 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
     private lateinit var refresh: Button
-    private val green = Color.rgb(20, 130, 80)
-    private val navy = Color.rgb(20, 39, 58)
+    private val green = Color.rgb(0, 205, 145)
+    private val navy = Color.rgb(8, 20, 42)
+    private val surface = Color.rgb(15, 32, 62)
+    private val muted = Color.rgb(170, 190, 220)
+    private val amber = Color.rgb(245, 177, 55)
+    private val page = Color.rgb(5, 14, 31)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,7 +57,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 34, 32, 36)
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setBackgroundColor(Color.rgb(246, 248, 250))
+            setBackgroundColor(page)
         }
         scroll.addView(content)
         setContentView(scroll)
@@ -86,12 +93,12 @@ class MainActivity : Activity() {
         }
         top.addView(refresh)
         content.addView(top)
-        content.addView(tv("سهام منتخب امروز", 20f, navy, true))
-        content.addView(tv("حداکثر ۵ نماد برتر بر اساس جریان پول حقیقی، قدرت خریدار، حجم و روند کوتاه‌مدت.", 13f))
+        content.addView(tv("دیده‌بان و فرصت‌های معاملاتی", 20f, Color.WHITE, true))
+        content.addView(tv("تحلیل میان‌مدت • فیلتر محافظه‌کارانه • حداکثر ۵ فرصت خرید", 13f, muted))
     }
 
     private fun showIntro() {
-        content.addView(tv("این نسخه آزمایشی است. تا زمانی که دریافت داده واقعی تأیید نشود، هیچ نمادی به‌عنوان سیگنال قطعی نمایش داده نمی‌شود.", 13f, Color.rgb(150, 90, 0)))
+        content.addView(tv("سیگنال‌ها بر پایه داده‌های دریافتی و شروط فنی هستند؛ هیچ امتیازی تضمین سود نیست.", 13f, amber))
     }
 
     private fun loadMarket() {
@@ -163,8 +170,22 @@ class MainActivity : Activity() {
                                 }
                                 val avgVol = volumes.average()
                                 if (avgVol > 0) s.volumeRatio = s.volume / avgVol
-                                val priorHigh = daily.drop(1).take(20).maxOfOrNull { firstNum(it, "priceMax", "pmax") } ?: 0.0
-                                s.breakout20 = priorHigh > 0 && s.close >= priorHigh
+                                val priorRows = daily.drop(1).take(20)
+                                val priorHigh = priorRows.maxOfOrNull { firstNum(it, "priceMax", "pmax") } ?: 0.0
+                                val recentRows = daily.drop(1).take(10)
+                                val recentLow = recentRows.mapNotNull { row ->
+                                    val low = firstNum(row, "priceMin", "pmin")
+                                    if (low > 0) low else null
+                                }.minOrNull() ?: 0.0
+                                s.resistance = priorHigh
+                                s.support = recentLow
+                                s.breakout20 = priorHigh > 0 && s.close > priorHigh
+                                s.entryTrigger = if (priorHigh > 0) priorHigh * 1.005 else 0.0
+                                s.stopLoss = if (recentLow > 0) recentLow * 0.99 else 0.0
+                                if (s.entryTrigger > s.stopLoss && s.stopLoss > 0) {
+                                    s.targetPrice = s.entryTrigger + 2.0 * (s.entryTrigger - s.stopLoss)
+                                    s.rewardRisk = 2.0
+                                }
                                 val ema12 = ema(closes, 12)
                                 val ema26 = ema(closes, 26)
                                 val macdLine = ema12 - ema26
@@ -178,6 +199,8 @@ class MainActivity : Activity() {
                 val analyzed = liquid.map { score(it) }
                 val scored = analyzed.filter { isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
+                val ready = analyzed.filter { isReadyForEntry(it) && !isBuyCandidate(it) }
+                    .sortedByDescending { it.score }.take(5)
                 val watchlist = analyzed.filter {
                     val totalRetail = it.buyIVol + it.sellIVol
                     val netPct = if (totalRetail > 0) (it.buyIVol - it.sellIVol) / totalRetail * 100 else -100.0
@@ -186,7 +209,7 @@ class MainActivity : Activity() {
                         it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
                 }.sortedByDescending { it.score }.take(8)
                 runOnUiThread {
-                    render(scored, watchlist, candidates.size, liquid.size)
+                    render(scored, ready, watchlist, candidates.size, liquid.size)
                     status.text = "داده دریافت شد • ${candidates.size} نماد شناسایی شد • ${liquid.size} نماد تحلیل عمیق شد"
                     refresh.isEnabled = true
                 }
@@ -232,10 +255,22 @@ class MainActivity : Activity() {
         val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 &&
-            s.weeklyTrend && s.rsi14 in 50.0..70.0 &&
-            s.macdBullish && s.volumeRatio >= 1.2 &&
-            netPct >= 5.0 && s.buyerPower >= 1.1 &&
-            s.value >= 5_000_000_000.0 && s.score >= 70
+            s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
+            s.macdBullish && s.volumeRatio >= 1.3 && s.breakout20 &&
+            netPct >= 8.0 && s.buyerPower in 1.1..3.0 &&
+            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 70
+    }
+
+    private fun isReadyForEntry(s: Share): Boolean {
+        val totalRetail = s.buyIVol + s.sellIVol
+        val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else -100.0
+        return s.historyReady && s.clientDataReady &&
+            s.close > s.sma20 && s.sma20 > s.sma50 && s.weeklyTrend &&
+            s.rsi14 in 48.0..68.0 && s.macdBullish &&
+            s.volumeRatio >= 1.2 && !s.breakout20 &&
+            s.resistance > 0 && s.close >= s.resistance * 0.97 &&
+            netPct >= 5.0 && s.buyerPower in 1.1..3.0 &&
+            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0
     }
 
     private fun ema(values: List<Double>, period: Int): Double {
@@ -256,39 +291,60 @@ class MainActivity : Activity() {
         return ema(macdValues, 9)
     }
 
-    private fun render(list: List<Share>, watchlist: List<Share>, scanned: Int, deeplyScanned: Int) {
+    private fun render(list: List<Share>, ready: List<Share>, watchlist: List<Share>, scanned: Int, deeplyScanned: Int) {
         content.removeViews(3, max(0, content.childCount - 3))
-        content.addView(tv("نتیجه تحلیل: $scanned نماد شناسایی شد؛ $deeplyScanned نماد از نظر سابقه قیمت تحلیل عمیق شدند.", 14f, navy, true))
-        content.addView(tv("سیگنال‌های خرید معتبر", 19f, navy, true))
-        if (list.isEmpty()) {
-            content.addView(tv("فعلاً نمادی تمام شروط سخت‌گیرانه خرید را ندارد. هیچ خریدی صرفاً بر اساس امتیاز پیشنهاد نمی‌شود.", 14f, Color.rgb(130, 80, 0)))
-        } else {
-            list.forEachIndexed { idx, s -> addShareCard(s, idx + 1, "خرید معتبر", green) }
+        content.addView(tv("خلاصه بازار  •  $scanned نماد شناسایی‌شده  •  $deeplyScanned تحلیل عمیق", 13f, muted, true))
+        addSection("خرید معتبر", "شکست مقاومت با تأیید روند، حجم و جریان پول", list.size, green)
+        if (list.isEmpty()) content.addView(tv("فعلاً هیچ نمادی تمام شروط خرید را ندارد؛ از ورود عجولانه خودداری کن.", 14f, amber))
+        else list.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "خرید معتبر", green) }
+
+        addSection("آماده ورود پس از تأیید", "نزدیک مقاومت است؛ فقط پس از شکست و تثبیت بررسی شود", ready.size, Color.rgb(70, 145, 255))
+        if (ready.isEmpty()) content.addView(tv("نمادی در آستانه شکست معتبر شناسایی نشد.", 14f, muted))
+        else ready.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "آماده ورود", Color.rgb(70, 145, 255)) }
+
+        addSection("صرفاً زیر نظر", "شرایط اولیه دارد اما هنوز نقطه ورود مناسبی نیست", watchlist.size, amber)
+        if (watchlist.isEmpty()) content.addView(tv("نماد واجد شرایط زیر نظر با داده کافی پیدا نشد.", 14f, muted))
+        else watchlist.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "زیر نظر", amber) }
+        content.addView(tv("سطوح حمایت و مقاومت، برآوردهای تکنیکال از داده‌های روزانه‌اند؛ قبل از معامله با نمودار و اطلاعیه‌ها تطبیق بده. حد ضرر قطعی یا تضمین‌شده نیست.", 12f, amber))
+    }
+
+    private fun addSection(title: String, subtitle: String, count: Int, color: Int) {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 14, 18, 14)
+            setBackgroundColor(surface)
         }
-        content.addView(tv("نمادهای زیر نظر", 19f, navy, true))
-        content.addView(tv("این نمادها بعضی شرایط را دارند اما هنوز تأیید کامل خرید نگرفته‌اند؛ برای بررسی بیشتر زیر نظر باشند.", 13f))
-        if (watchlist.isEmpty()) {
-            content.addView(tv("نماد واجد شرایط زیر نظر با داده تاریخی کافی پیدا نشد.", 14f))
-        } else {
-            watchlist.forEachIndexed { idx, s -> addShareCard(s, idx + 1, "زیر نظر – هنوز خرید نیست", Color.rgb(170, 105, 20)) }
+        panel.addView(tv("$title   •   $count نماد", 19f, color, true))
+        panel.addView(tv(subtitle, 12f, muted))
+        val lp = LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = 18
+            bottomMargin = 8
         }
-        content.addView(tv("امتیازها ابزار غربالگری‌اند، نه تضمین سود. پیش از معامله، نمودار هفتگی، اطلاعیه‌های کدال، صف و نقدشوندگی را بررسی کن.", 12f, Color.rgb(130, 80, 0)))
+        content.addView(panel, lp)
     }
 
     private fun addShareCard(s: Share, index: Int, label: String, labelColor: Int) {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(22, 16, 22, 16)
-            setBackgroundColor(Color.WHITE)
+            setPadding(18, 14, 18, 14)
+            setBackgroundColor(surface)
             elevation = 3f
         }
-        card.addView(tv("$index. ${s.symbol}     امتیاز ${s.score}/100 • $label", 18f, labelColor, true))
-        card.addView(tv("ورود خالص پول حقیقی: ${formatMoney(s.netRetailValue)} ریال", 13f))
-        card.addView(tv("قدرت خریدار/فروشنده: ${"%.2f".format(Locale.US, s.buyerPower)}", 13f))
-        card.addView(tv("تغییر پنج‌روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪  •  نسبت حجم: ${"%.1f".format(Locale.US, s.volumeRatio)}", 13f))
-        card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}  •  میانگین ۲۰روزه: ${formatMoney(s.sma20)}  •  میانگین ۵۰روزه: ${formatMoney(s.sma50)}", 12f))
-        card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 13f))
-        val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
+        card.addView(tv("$index. ${s.symbol}     ${s.score}/100  •  $label", 18f, labelColor, true))
+        card.addView(tv("پول خالص حقیقی: ${formatMoney(s.netRetailValue)} ریال    |    قدرت خریدار: ${"%.2f".format(Locale.US, s.buyerPower)}", 12f, Color.WHITE))
+        card.addView(tv("تغییر ۵روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪    |    حجم: ${"%.1f".format(Locale.US, s.volumeRatio)} برابر میانگین", 12f, muted))
+        card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}    |    روند هفتگی: ${if (s.weeklyTrend) "صعودی" else "تأییدنشده"}    |    MACD: ${if (s.macdBullish) "مثبت" else "منفی"}", 12f, muted))
+        if (s.resistance > 0) card.addView(tv("مقاومت: ${formatMoney(s.resistance)}    |    حمایت: ${formatMoney(s.support)}", 12f, Color.WHITE))
+        if (s.entryTrigger > 0 && s.stopLoss > 0) {
+            card.addView(tv("تریگر ورود: ${formatMoney(s.entryTrigger)}    |    حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
+            card.addView(tv("هدف محاسباتی ۲R: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان: ۱ به ۲", 12f, green, true))
+        } else {
+            card.addView(tv("سطوح ورود/حد ضرر به علت ناکافی بودن داده معتبر محاسبه نشد.", 12f, amber))
+        }
+        card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 12f, muted))
+        val lp = LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = 10
+        }
         content.addView(card, lp)
     }
 
@@ -330,7 +386,8 @@ class MainActivity : Activity() {
         Share(code, symbol, last, close, yesterday, volume, baseVolume, value,
             buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio,
             sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
-            historyReady, true, score, reasons)
+            historyReady, true, resistance, support, entryTrigger, stopLoss,
+            targetPrice, rewardRisk, score, reasons)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
