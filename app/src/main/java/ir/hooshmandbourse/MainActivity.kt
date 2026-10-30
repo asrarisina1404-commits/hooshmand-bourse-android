@@ -19,8 +19,8 @@ import kotlin.math.min
 data class Share(
     val code: String, val symbol: String, val last: Double, val close: Double,
     val yesterday: Double, val volume: Double, val baseVolume: Double,
-    val value: Double, val buyIVol: Double, val sellIVol: Double,
-    val buyICount: Double, val sellICount: Double,
+    val value: Double, var buyIVol: Double = 0.0, var sellIVol: Double = 0.0,
+    var buyICount: Double = 0.0, var sellICount: Double = 0.0,
     var fiveDayReturn: Double = 0.0, var volumeRatio: Double = 0.0,
     var sma20: Double = 0.0, var sma50: Double = 0.0, var rsi14: Double = 0.0,
     var macdBullish: Boolean = false, var weeklyTrend: Boolean = false,
@@ -33,7 +33,7 @@ data class Share(
     var atr14Pct: Double = 0.0, var adx14: Double = 0.0,
     var obvRising: Boolean = false, var bollingerPosition: Double = 0.0,
     var buyIValue: Double = 0.0, var sellIValue: Double = 0.0,
-    var lastHistoryDate: String = ""
+    var lastHistoryDate: String = "", var clientDataDate: String = ""
 ) {
     // Use the exchange-reported retail trade values; never estimate money flow from volume * close.
     val netRetailValue: Double get() = buyIValue - sellIValue
@@ -114,36 +114,33 @@ class MainActivity : Activity() {
             try {
                 // The CDN GetMarketWatch endpoint can return an empty marketwatch array.
                 // Use the legacy full-market snapshot instead; its rows are documented CSV-like records.
-                val clientRows = try {
-                    val clientJson = getJson("https://cdn.tsetmc.com/api/ClientType/GetClientTypeAll")
-                    findArray(clientJson, "clientTypeAllDto") ?: JSONArray()
-                } catch (_: Exception) { JSONArray() }
-                val clients = HashMap<String, JSONObject>()
-                for (i in 0 until clientRows.length()) {
-                    val o = clientRows.optJSONObject(i) ?: continue
-                    val code = firstString(o, "insCode", "InsCode", "instrumentCode")
-                    if (code.isNotBlank()) clients[code] = o
-                }
-                val candidates = loadLegacyMarketRows().map { s ->
-                    val c = clients[s.code] ?: JSONObject()
-                    s.copyClientData(
-                        firstNum(c, "buy_I_Volume"), firstNum(c, "sell_I_Volume"),
-                        firstNum(c, "buy_CountI"), firstNum(c, "sell_CountI"),
-                        firstNum(c, "buy_I_Value", "buy_IValue", "buyIValue"),
-                        firstNum(c, "sell_I_Value", "sell_IValue", "sellIValue")
-                    )
-                }.toMutableList()
+                // Load the market snapshot first. Client values are fetched from per-instrument
+                // history because the bulk ClientType endpoint does not reliably include values.
+                val candidates = loadLegacyMarketRows()
                 if (candidates.isEmpty()) throw Exception("دیده‌بان جایگزین TSETMC نیز نمادی برنگرداند؛ احتمالاً دسترسی شبکه یا سرویس بازار محدود است.")
                 // Fetch enough sessions to assess the medium-term trend, not just a five-day bounce.
                 // Deep-check a broader liquid universe. The remaining symbols are not claimed to have full technical validation.
                 val liquid = candidates.sortedByDescending { it.value }.take(80)
                 val historyTasks = liquid.map { s ->
                     pool.submit {
-                    // Reject thin or implausible client-type samples before using buyer power.
-                    s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 &&
-                        s.buyIValue > 0 && s.sellIValue > 0 &&
-                        s.buyICount >= 5 && s.sellICount >= 5 &&
-                        s.buyerPower.isFinite() && s.buyerPower in 0.7..3.5
+                    // Fetch the latest per-symbol client-type history record. This endpoint
+                    // contains actual I/N values, volumes and counts in one dated record.
+                    try {
+                        val clientHistory = getJson("https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/${s.code}")
+                        val clientRows = findArray(clientHistory, "clientType") ?: JSONArray()
+                        val latestClient = (0 until clientRows.length())
+                            .mapNotNull { clientRows.optJSONObject(it) }
+                            .maxByOrNull { firstNum(it, "recDate", "dEven") }
+                        if (latestClient != null) {
+                            s.buyIVol = firstNum(latestClient, "buy_I_Volume")
+                            s.sellIVol = firstNum(latestClient, "sell_I_Volume")
+                            s.buyICount = firstNum(latestClient, "buy_I_Count", "buy_CountI")
+                            s.sellICount = firstNum(latestClient, "sell_I_Count", "sell_CountI")
+                            s.buyIValue = firstNum(latestClient, "buy_I_Value", "buy_IValue", "buyIValue")
+                            s.sellIValue = firstNum(latestClient, "sell_I_Value", "sell_IValue", "sellIValue")
+                            s.clientDataDate = firstString(latestClient, "recDate", "dEven")
+                        }
+                    } catch (_: Exception) { /* no trustworthy client flow: fail closed */ }
                     try {
                         val history = getJson("https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceDailyList/${s.code}/80")
                         val rows = findArray(history, "closingPriceDaily")
@@ -239,6 +236,14 @@ class MainActivity : Activity() {
                             }
                         }
                     } catch (_: Exception) { /* missing history must not be treated as a buy signal */ }
+                    val priceDate = s.lastHistoryDate.filter { it.isDigit() }.take(8)
+                    val flowDate = s.clientDataDate.filter { it.isDigit() }.take(8)
+                    // Do not combine flow and price observations from different sessions.
+                    s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 &&
+                        s.buyIValue > 0 && s.sellIValue > 0 &&
+                        s.buyICount >= 5 && s.sellICount >= 5 &&
+                        priceDate.isNotBlank() && priceDate == flowDate &&
+                        s.buyerPower.isFinite() && s.buyerPower in 0.7..3.5
                     }
                 }
                 historyTasks.forEach { it.get() }
@@ -546,7 +551,7 @@ class MainActivity : Activity() {
         } else {
             card.addView(tv("ارزش معاملات حقیقی/تعداد خریداران معتبر نیست؛ جریان پول و قدرت خریدار قابل اتکا نیست.", 12f, amber))
         }
-        card.addView(tv("آخرین تاریخ سابقه: ${s.lastHistoryDate.ifBlank { "نامشخص" }}", 11f, muted))
+        card.addView(tv("تاریخ سابقه قیمت: ${s.lastHistoryDate.ifBlank { "نامشخص" }}  |  تاریخ جریان حقیقی: ${s.clientDataDate.ifBlank { "نامشخص" }}", 11f, muted))
         card.addView(tv("تغییر ۵روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪    |    حجم: ${"%.1f".format(Locale.US, s.volumeRatio)} برابر میانگین", 12f, muted))
         card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}    |    روند هفتگی: ${if (s.weeklyTrend) "صعودی" else "تأییدنشده"}    |    MACD: ${if (s.macdBullish) "مثبت" else "منفی"}", 12f, muted))
         card.addView(tv("ADX: ${"%.1f".format(Locale.US, s.adx14)}    |    ATR: ${"%.1f".format(Locale.US, s.atr14Pct)}٪    |    OBV: ${if (s.obvRising) "صعودی" else "تأییدنشده"}", 12f, muted))
@@ -626,7 +631,7 @@ class MainActivity : Activity() {
             sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
             historyReady, true, resistance, support, entryTrigger, stopLoss,
             targetPrice, rewardRisk, score, reasons, atr14Pct, adx14, obvRising,
-            bollingerPosition, buyValue, sellValue, lastHistoryDate)
+            bollingerPosition, buyValue, sellValue, lastHistoryDate, clientDataDate)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
