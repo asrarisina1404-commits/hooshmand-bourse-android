@@ -272,31 +272,31 @@ class MainActivity : Activity() {
         val why = ArrayList<String>()
         val totalRetail = s.buyIVol + s.sellIVol
         val netPct = if (totalRetail > 0) (s.buyIVol - s.sellIVol) / totalRetail * 100 else 0.0
-        if (s.historyReady && s.close > s.sma20 && s.sma20 > s.sma50) { p += 20; why.add("روند میان‌مدت صعودی: قیمت بالای میانگین ۲۰ و میانگین ۲۰ بالای ۵۰") }
-        if (s.rsi14 in 50.0..68.0) { p += 10; why.add("قدرت نسبی مناسب بدون ورود به محدوده اشباع خرید") }
-        if (s.macdBullish) { p += 10; why.add("شتاب صعودی MACD") }
+        // Weighted score: trend 20, retail flow 20, volume 15,
+        // breakout 15, momentum 10, liquidity 10, trade risk/reward 10.
+        if (s.historyReady && s.close > s.sma20 && s.sma20 > s.sma50) { p += 10; why.add("روند روزانه میان‌مدت صعودی") }
         if (s.weeklyTrend) { p += 10; why.add("تأیید روند هفتگی") }
-        if (netPct >= 20) { p += 15; why.add("ورود خالص قابل‌توجه پول حقیقی") }
-        else if (netPct >= 8) { p += 10; why.add("برتری خرید حقیقی") }
+        if (netPct >= 20) { p += 12; why.add("ورود خالص قابل‌توجه پول حقیقی") }
+        else if (netPct >= 8) { p += 8; why.add("برتری خرید حقیقی") }
         else if (netPct < 0) { p = max(0, p - 15); why.add("هشدار: خروج خالص پول حقیقی؛ امتیاز کاهشی اعمال شد") }
-        if (s.clientDataReady && s.buyerPower in 1.15..2.5) { p += 6; why.add("قدرت خریدار بهتر از فروشنده و در محدوده قابل بررسی") }
+        if (s.clientDataReady && s.buyerPower in 1.15..2.5) { p += 8; why.add("قدرت خریدار بهتر از فروشنده و در محدوده قابل بررسی") }
         else if (s.clientDataReady && s.buyerPower > 2.5) { why.add("هشدار: قدرت خریدار غیرعادی؛ احتمال اختلال نمونه یا تمرکز معاملات، نیازمند بررسی") }
         else if (s.clientDataReady && s.buyerPower in 0.7..1.14) { why.add("قدرت خریدار برتری معناداری ندارد") }
         else if (!s.clientDataReady) { why.add("داده حقیقی/حقوقی کم‌حجم یا نامعتبر؛ قدرت خریدار قابل اتکا نیست") }
-        if (s.volumeRatio in 1.3..3.5) { p += 10; why.add("افزایش حجم معقول نسبت به میانگین") }
-        if (s.breakout20) { p += 5; why.add("عبور قیمت پایانی از سقف ۲۰ روزه") }
+        if (s.volumeRatio in 1.3..3.5) { p += 8; why.add("افزایش حجم معقول نسبت به میانگین") }
+        if (s.breakout20 && s.close >= s.last * 0.995) { p += 7; why.add("شکست سقف ۲۰روزه با تثبیت قیمت پایانی") } else if (s.breakout20) { why.add("شکست سقف بدون تثبیت کافی؛ نیازمند تأیید") }
         if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 5; why.add("تثبیت قیمت پایانی و آخرین معامله در محدوده مثبت") }
         if (s.baseVolume > 0 && s.volume >= s.baseVolume) { p += 5; why.add("حجم بالاتر از حجم مبنا") }
-        if (s.value >= 5_000_000_000.0) { p += 5; why.add("ارزش معاملات روزانه مناسب") }
-        if (s.rewardRisk >= 2.0) { p += 5; why.add("هدف تکنیکالی واقعی حداقل دو برابر ریسک برآوردی است") }
+        if (s.value >= 5_000_000_000.0) { p += 10; why.add("ارزش معاملات روزانه مناسب") }
+        if (s.rewardRisk >= 2.0) { p += 10; why.add("هدف تکنیکالی واقعی حداقل دو برابر ریسک برآوردی است") }
         else if (s.historyReady) { why.add("فاصله تا مقاومت بعدی برای نسبت سود به زیان ۲ کافی نیست") }
-        if (s.adx14 >= 18.0 && s.adx14 <= 40.0) { p += 6; why.add("قدرت روند با ADX تأیید می‌شود") }
+        if (s.adx14 >= 18.0 && s.adx14 <= 40.0) { p += 5; why.add("قدرت روند با ADX تأیید می‌شود") }
         else if (s.adx14 > 50.0) { p -= 4; why.add("هشدار: ADX بسیار بالا؛ احتمال دیررسیدن به روند") }
         if (s.obvRising) { p += 5; why.add("OBV صعودی؛ حجم با حرکت قیمت هم‌جهت است") }
         else if (s.historyReady) { p -= 3; why.add("OBV صعودی نیست؛ انباشت حجمی تأیید نشده") }
-        if (s.atr14Pct in 0.5..7.5) { p += 3; why.add("نوسان ATR در محدوده قابل مدیریت") }
+        if (s.atr14Pct in 0.5..7.5) { p += 2; why.add("نوسان ATR در محدوده قابل مدیریت") }
         else if (s.atr14Pct > 7.5) { p -= 5; why.add("هشدار: نوسان روزانه بالا بر اساس ATR") }
-        if (s.bollingerPosition in 0.35..0.95) { p += 3; why.add("موقعیت قیمت در باند بولینگر مناسب است") }
+        if (s.bollingerPosition in 0.35..0.95) { p += 2; why.add("موقعیت قیمت در باند بولینگر مناسب است") }
         else if (s.bollingerPosition > 1.05) { p -= 5; why.add("هشدار: قیمت بیش از حد از باند بالایی بولینگر فاصله گرفته") }
         if (s.rsi14 > 72.0) { p = min(p, 55); why.add("هشدار: RSI وارد محدوده داغ شده") }
         // Do not let a high indicator score disguise an unusable entry/exit plan.
@@ -317,11 +317,11 @@ class MainActivity : Activity() {
         return s.historyReady && s.clientDataReady &&
             s.close > s.sma20 && s.sma20 > s.sma50 &&
             s.weeklyTrend && s.rsi14 in 50.0..68.0 &&
-            s.macdBullish && s.volumeRatio in 1.3..3.5 && s.breakout20 &&
+            s.macdBullish && s.volumeRatio in 1.3..3.5 && s.breakout20 && s.close >= s.last * 0.995 &&
             s.adx14 >= 18.0 && s.adx14 <= 45.0 && s.obvRising &&
             s.atr14Pct in 0.5..7.5 && s.bollingerPosition in 0.35..1.05 &&
             netPct >= 8.0 && s.buyerPower in 1.1..2.5 &&
-            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 70
+            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 75
     }
 
     private fun isReadyForEntry(s: Share): Boolean {
@@ -441,6 +441,7 @@ class MainActivity : Activity() {
                 !isBuyCandidate(item) && !isReadyForEntry(item)
             addShareCard(item, idx + 1, if (qualified) "زیر نظر" else "بررسی اولیه؛ بدون تأیید", amber)
         }
+        content.addView(tv("امتیاز ۱۰۰تایی رتبه‌بندی نسبی است و احتمال موفقیت یا تضمین سود نیست. بک‌تست آماری هنوز به داده تاریخی تعدیل‌شده و لحاظ صفوف و کارمزد نیاز دارد.", 12f, amber))
         content.addView(tv("سطوح حمایت و مقاومت، برآوردهای تکنیکال از داده‌های روزانه‌اند؛ قبل از معامله با نمودار و اطلاعیه‌ها تطبیق بده. حد ضرر قطعی یا تضمین‌شده نیست.", 12f, amber))
     }
 
@@ -479,6 +480,7 @@ class MainActivity : Activity() {
         if (s.buyerPower > 2.5) blockers.add("قدرت خریدار غیرعادی است (بیش از ۲٫۵) و باید دستی بررسی شود.")
         else if (s.buyerPower < 1.1) blockers.add("قدرت خریدار حقیقی برتری کافی ندارد.")
         if (s.value < 5_000_000_000.0) blockers.add("ارزش معاملات روزانه به حداقل نقدشوندگی تعیین‌شده نرسیده است.")
+        if (s.breakout20 && s.close < s.last * 0.995) blockers.add("قیمت پایانی شکست را تأیید نکرده؛ احتمال شکست ناموفق وجود دارد.")
         if (s.stopLoss <= 0) blockers.add("حد ضرر معتبر پایین‌تر از نقطه ورود محاسبه نشده؛ ریسک معامله قابل تعریف نیست.")
         if (s.targetPrice <= s.entryTrigger) blockers.add("مقاومت معتبر بالاتر از نقطه ورود پیدا نشد؛ هدف تکنیکالی تعیین نشده است.")
         else if (s.rewardRisk < 2.0) blockers.add("فاصله تا مقاومت بعدی برای نسبت سود به زیان حداقل ۱ به ۲ کافی نیست.")
