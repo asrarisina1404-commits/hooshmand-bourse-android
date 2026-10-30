@@ -348,8 +348,7 @@ class MainActivity : Activity() {
         else if (s.bollingerPosition > 1.05) { p -= 5; why.add("هشدار: قیمت بیش از حد از باند بالایی بولینگر فاصله گرفته") }
         if (s.rsi14 > 72.0) { p = min(p, 55); why.add("هشدار: RSI وارد محدوده داغ شده") }
         // Do not let a high indicator score disguise an unusable entry/exit plan.
-        val validTradePlan = s.entryTrigger > 0 && s.stopLoss > 0 &&
-            s.targetPrice > s.entryTrigger && s.rewardRisk > 0.0
+        val validTradePlan = hasValidTradePlan(s, 1.0)
         if (!validTradePlan) {
             p = min(p, 64)
             why.add("برنامه معامله کامل نیست: هدف یا حد ضرر معتبر وجود ندارد؛ امتیاز خرید محدود شد")
@@ -359,7 +358,25 @@ class MainActivity : Activity() {
         return s
     }
 
+    // A trade plan is valid only when all three price levels are real, ordered,
+    // finite values and the displayed reward/risk agrees with the price distances.
+    // Missing target or stop must never be treated as a pre-entry opportunity.
+    private fun hasValidTradePlan(s: Share, minimumRewardRisk: Double): Boolean {
+        if (!s.entryTrigger.isFinite() || !s.stopLoss.isFinite() || !s.targetPrice.isFinite() ||
+            !s.rewardRisk.isFinite()) return false
+        if (s.entryTrigger <= 0.0 || s.stopLoss <= 0.0 ||
+            s.stopLoss >= s.entryTrigger || s.targetPrice <= s.entryTrigger) return false
+        val risk = s.entryTrigger - s.stopLoss
+        val reward = s.targetPrice - s.entryTrigger
+        if (risk <= 0.0 || reward <= 0.0) return false
+        val calculated = reward / risk
+        return calculated.isFinite() && calculated >= minimumRewardRisk &&
+            s.rewardRisk >= minimumRewardRisk &&
+            kotlin.math.abs(calculated - s.rewardRisk) <= max(0.05, calculated * 0.05)
+    }
+
     private fun isBuyCandidate(s: Share): Boolean {
+        if (!hasValidTradePlan(s, 2.0)) return false
         val totalRetail = s.buyIValue + s.sellIValue
         val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else 0.0
         return s.historyReady && s.clientDataReady &&
@@ -370,10 +387,14 @@ class MainActivity : Activity() {
             s.adx14 >= 18.0 && s.adx14 <= 45.0 && s.obvRising &&
             s.atr14Pct in 0.5..7.5 && s.bollingerPosition in 0.35..1.05 &&
             netPct >= 8.0 && s.buyerPower in 1.1..2.5 &&
-            s.value >= 5_000_000_000.0 && s.rewardRisk >= 2.0 && s.score >= 75
+            s.value >= 5_000_000_000.0 && hasValidTradePlan(s, 2.0) && s.score >= 75
     }
 
     private fun isReadyForEntry(s: Share): Boolean {
+        // This is a pre-breakout state, not a fallback for incomplete plans.
+        // Require a real target, a stop below entry, and at least 1.5R before
+        // displaying the symbol in this section.
+        if (s.breakout20 || !hasValidTradePlan(s, 1.5)) return false
         val totalRetail = s.buyIValue + s.sellIValue
         val netPct = if (totalRetail > 0) (s.buyIValue - s.sellIValue) / totalRetail * 100 else -100.0
         // Pre-breakout watch state: deliberately looser than a buy signal.
@@ -385,7 +406,7 @@ class MainActivity : Activity() {
             s.adx14 >= 15.0 && s.obvRising && s.atr14Pct in 0.5..8.0 &&
             s.resistance > 0 && s.close >= s.resistance * 0.95 &&
             netPct >= 3.0 && s.buyerPower in 1.05..3.0 &&
-            s.value >= 5_000_000_000.0 && s.rewardRisk >= 1.5
+            s.value >= 5_000_000_000.0 && hasValidTradePlan(s, 1.5)
     }
 
     private fun calculateAtrPercent(highs: List<Double>, lows: List<Double>, closes: List<Double>): Double {
@@ -481,7 +502,7 @@ class MainActivity : Activity() {
         if (list.isEmpty()) content.addView(tv("فعلاً هیچ نمادی تمام شروط خرید را ندارد؛ از ورود عجولانه خودداری کن.", 14f, amber))
         else list.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "خرید معتبر", green) }
 
-        addSection("آماده ورود پس از تأیید", "نزدیک مقاومت است؛ فقط پس از شکست و تثبیت بررسی شود", ready.size, Color.rgb(70, 145, 255))
+        addSection("آماده ورود پس از تأیید", "فقط نمادهای نزدیک شکست با هدف، حد ضرر و نسبت سود به زیان معتبر؛ هنوز سیگنال خرید نیست", ready.size, Color.rgb(70, 145, 255))
         if (ready.isEmpty()) content.addView(tv("نمادی در آستانه شکست معتبر شناسایی نشد.", 14f, muted))
         else ready.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "آماده ورود", Color.rgb(70, 145, 255)) }
 
@@ -588,7 +609,7 @@ class MainActivity : Activity() {
             if (s.rewardRisk < 2.0) {
                 card.addView(tv("• نسبت سود به زیان هنوز به معیار خرید معتبر (حداقل ۲) نرسیده است.", 12f, muted))
             }
-            card.addView(tv("پس از شکست مقاومت، تثبیت قیمت و باقی‌ماندن نسبت سود به زیان در سطح مناسب، دوباره تحلیل کن.", 12f, amber))
+            card.addView(tv("برنامه معامله اولیه کامل است؛ فقط پس از شکست و تثبیت معتبر، تحلیل دوباره انجام شود. تا آن زمان خرید نکن.", 12f, amber))
         } else if (label != "خرید معتبر") {
             val blockers = entryBlockers(s).take(3)
             card.addView(tv("مهم‌ترین موانع بررسی:", 14f, amber, true))
