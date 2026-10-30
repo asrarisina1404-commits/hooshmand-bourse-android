@@ -205,18 +205,22 @@ class MainActivity : Activity() {
                                 val atrDistance = latest * s.atr14Pct / 100.0
                                 val supportStop = if (recentLow > 0) recentLow * 0.99 else 0.0
                                 val atrStop = if (atrDistance > 0) s.entryTrigger - 2.0 * atrDistance else 0.0
-                                s.stopLoss = when {
+                                val proposedStop = when {
                                     supportStop > 0 && atrStop > 0 -> max(supportStop, atrStop)
                                     supportStop > 0 -> supportStop
                                     atrStop > 0 -> atrStop
                                     else -> 0.0
                                 }
-                                s.targetPrice = if (nextResistance > s.entryTrigger * 1.01) nextResistance else 0.0
-                                if (s.entryTrigger > s.stopLoss && s.stopLoss > 0 && s.targetPrice > s.entryTrigger) {
-                                    s.rewardRisk = (s.targetPrice - s.entryTrigger) / (s.entryTrigger - s.stopLoss)
-                                } else {
-                                    s.rewardRisk = 0.0
-                                }
+                                // A stop must be below the planned entry; otherwise the trade plan is invalid.
+                                s.stopLoss = if (s.entryTrigger > 0 && proposedStop > 0 &&
+                                    proposedStop < s.entryTrigger * 0.995) proposedStop else 0.0
+                                // Show a target only when a real prior resistance offers room above entry.
+                                s.targetPrice = if (s.entryTrigger > 0 &&
+                                    nextResistance > s.entryTrigger * 1.01) nextResistance else 0.0
+                                s.rewardRisk = if (s.entryTrigger > 0 && s.stopLoss > 0 &&
+                                    s.targetPrice > s.entryTrigger) {
+                                    (s.targetPrice - s.entryTrigger) / (s.entryTrigger - s.stopLoss)
+                                } else 0.0
                                 val ema12 = ema(closes, 12)
                                 val ema26 = ema(closes, 26)
                                 val macdLine = ema12 - ema26
@@ -229,7 +233,7 @@ class MainActivity : Activity() {
                 }
                 val analyzed = liquid.map { score(it) }
                 val scored = analyzed.filter { isBuyCandidate(it) }
-                    .sortedByDescending { it.score }.take(5)
+                    .sortedWith(compareByDescending<Share> { it.score }.thenByDescending { it.rewardRisk }.thenByDescending { it.value }).take(5)
                 val ready = analyzed.filter { isReadyForEntry(it) && !isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
                 // First show symbols that meet the normal watchlist conditions.
@@ -241,7 +245,7 @@ class MainActivity : Activity() {
                     it.historyReady && it.clientDataReady && it.score >= 45 &&
                         netPct >= 0.0 && it.buyerPower in 0.9..2.5 &&
                         it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
-                }.sortedByDescending { it.score }.take(8)
+                }.sortedWith(compareByDescending<Share> { it.score }.thenByDescending { it.rewardRisk }.thenByDescending { it.value }).take(8)
                 val watchlist = (qualifiedWatchlist + analyzed
                     .filter { candidate -> qualifiedWatchlist.none { it.code == candidate.code } &&
                         !isBuyCandidate(candidate) && !isReadyForEntry(candidate) }
@@ -295,7 +299,14 @@ class MainActivity : Activity() {
         if (s.bollingerPosition in 0.35..0.95) { p += 3; why.add("موقعیت قیمت در باند بولینگر مناسب است") }
         else if (s.bollingerPosition > 1.05) { p -= 5; why.add("هشدار: قیمت بیش از حد از باند بالایی بولینگر فاصله گرفته") }
         if (s.rsi14 > 72.0) { p = min(p, 55); why.add("هشدار: RSI وارد محدوده داغ شده") }
-        s.score = min(100, p)
+        // Do not let a high indicator score disguise an unusable entry/exit plan.
+        val validTradePlan = s.entryTrigger > 0 && s.stopLoss > 0 &&
+            s.targetPrice > s.entryTrigger && s.rewardRisk > 0.0
+        if (!validTradePlan) {
+            p = min(p, 64)
+            why.add("برنامه معامله کامل نیست: هدف یا حد ضرر معتبر وجود ندارد؛ امتیاز خرید محدود شد")
+        }
+        s.score = min(100, max(0, p))
         s.reasons = why
         return s
     }
@@ -468,7 +479,9 @@ class MainActivity : Activity() {
         if (s.buyerPower > 2.5) blockers.add("قدرت خریدار غیرعادی است (بیش از ۲٫۵) و باید دستی بررسی شود.")
         else if (s.buyerPower < 1.1) blockers.add("قدرت خریدار حقیقی برتری کافی ندارد.")
         if (s.value < 5_000_000_000.0) blockers.add("ارزش معاملات روزانه به حداقل نقدشوندگی تعیین‌شده نرسیده است.")
-        if (s.targetPrice <= s.entryTrigger || s.rewardRisk < 2.0) blockers.add("مقاومت بعدی فضای کافی برای نسبت سود به زیان حداقل ۱ به ۲ نمی‌دهد.")
+        if (s.stopLoss <= 0) blockers.add("حد ضرر معتبر پایین‌تر از نقطه ورود محاسبه نشده؛ ریسک معامله قابل تعریف نیست.")
+        if (s.targetPrice <= s.entryTrigger) blockers.add("مقاومت معتبر بالاتر از نقطه ورود پیدا نشد؛ هدف تکنیکالی تعیین نشده است.")
+        else if (s.rewardRisk < 2.0) blockers.add("فاصله تا مقاومت بعدی برای نسبت سود به زیان حداقل ۱ به ۲ کافی نیست.")
         return blockers.distinct()
     }
 
@@ -486,14 +499,21 @@ class MainActivity : Activity() {
         card.addView(tv("ADX: ${"%.1f".format(Locale.US, s.adx14)}    |    ATR: ${"%.1f".format(Locale.US, s.atr14Pct)}٪    |    OBV: ${if (s.obvRising) "صعودی" else "تأییدنشده"}", 12f, muted))
         card.addView(tv("جایگاه باند بولینگر: ${"%.2f".format(Locale.US, s.bollingerPosition)}  (بالاتر از ۱ یعنی بالای باند)", 11f, muted))
         if (s.resistance > 0) card.addView(tv("مقاومت: ${formatMoney(s.resistance)}    |    حمایت: ${formatMoney(s.support)}", 12f, Color.WHITE))
-        if (s.entryTrigger > 0 && s.stopLoss > 0) {
-            card.addView(tv("تریگر ورود: ${formatMoney(s.entryTrigger)}    |    حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
-            card.addView(tv("هدف تکنیکالی برآوردی از سقف ۵۵روزه: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان محاسباتی: ۱ به ${"%.2f".format(Locale.US, s.rewardRisk)}", 12f, green, true))
-            card.addView(tv("هدف و حد ضرر تخمینی‌اند؛ شکاف قیمت، صف و کارمزد می‌تواند نسبت واقعی را تغییر دهد.", 11f, amber))
-        } else {
-            card.addView(tv("سطوح ورود/حد ضرر به علت ناکافی بودن داده معتبر محاسبه نشد.", 12f, amber))
-            card.addView(tv("هدف تکنیکالی: تعیین نشده است.", 11f, amber))
+        if (s.entryTrigger > 0) {
+            card.addView(tv("تریگر ورود برآوردی: ${formatMoney(s.entryTrigger)}", 12f, Color.WHITE))
         }
+        if (s.stopLoss > 0) {
+            card.addView(tv("حد ضرر برآوردی: ${formatMoney(s.stopLoss)}", 12f, Color.WHITE))
+        } else {
+            card.addView(tv("حد ضرر معتبر: تعیین نشده؛ ورود بر اساس این تحلیل مجاز نیست.", 12f, amber))
+        }
+        if (s.targetPrice > s.entryTrigger && s.rewardRisk > 0) {
+            card.addView(tv("هدف تکنیکالی برآوردی: ${formatMoney(s.targetPrice)}    |    نسبت سود به زیان: ۱ به ${"%.2f".format(Locale.US, s.rewardRisk)}", 12f, green, true))
+        } else {
+            card.addView(tv("هدف تکنیکالی معتبر: تعیین نشده؛ مقاومت بالاتر با فاصله کافی پیدا نشد.", 12f, amber, true))
+            card.addView(tv("نسبت سود به زیان: قابل محاسبه نیست (نه ۰ به‌عنوان نسبت واقعی).", 11f, amber))
+        }
+        card.addView(tv("هدف و حد ضرر تخمینی‌اند؛ شکاف قیمت، صف و کارمزد می‌تواند نسبت واقعی را تغییر دهد.", 11f, amber))
         if (label != "خرید معتبر") {
             val blockers = entryBlockers(s)
             card.addView(tv("چرا هنوز خرید نکنیم؟", 14f, amber, true))
