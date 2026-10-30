@@ -94,7 +94,7 @@ class MainActivity : Activity() {
         top.addView(refresh)
         content.addView(top)
         content.addView(tv("دیده‌بان و فرصت‌های معاملاتی", 20f, Color.WHITE, true))
-        content.addView(tv("تحلیل میان‌مدت • فیلتر محافظه‌کارانه • حداکثر ۵ فرصت خرید", 13f, muted))
+        content.addView(tv("تحلیل میان‌مدت • فیلتر محافظه‌کارانه • نمایش حداکثر ۸ نماد برای بررسی", 13f, muted))
     }
 
     private fun showIntro() {
@@ -201,13 +201,21 @@ class MainActivity : Activity() {
                     .sortedByDescending { it.score }.take(5)
                 val ready = analyzed.filter { isReadyForEntry(it) && !isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
-                val watchlist = analyzed.filter {
+                // First show symbols that meet the normal watchlist conditions.
+                // If fewer than eight qualify, fill the remaining slots with the best-ranked
+                // analyzed shares, clearly labeled as preliminary review only (never a buy signal).
+                val qualifiedWatchlist = analyzed.filter {
                     val totalRetail = it.buyIVol + it.sellIVol
                     val netPct = if (totalRetail > 0) (it.buyIVol - it.sellIVol) / totalRetail * 100 else -100.0
                     it.historyReady && it.clientDataReady && it.score >= 45 &&
                         netPct >= 0.0 && it.buyerPower in 0.9..2.5 &&
                         it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
                 }.sortedByDescending { it.score }.take(8)
+                val watchlist = (qualifiedWatchlist + analyzed
+                    .filter { candidate -> qualifiedWatchlist.none { it.code == candidate.code } &&
+                        !isBuyCandidate(candidate) && !isReadyForEntry(candidate) }
+                    .sortedWith(compareByDescending<Share> { it.historyReady }.thenByDescending { it.score }))
+                    .distinctBy { it.code }.take(8)
                 runOnUiThread {
                     render(scored, ready, watchlist, candidates.size, liquid.size)
                     status.text = "داده دریافت شد • ${candidates.size} نماد شناسایی شد • ${liquid.size} نماد تحلیل عمیق شد"
@@ -303,9 +311,13 @@ class MainActivity : Activity() {
         if (ready.isEmpty()) content.addView(tv("نمادی در آستانه شکست معتبر شناسایی نشد.", 14f, muted))
         else ready.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "آماده ورود", Color.rgb(70, 145, 255)) }
 
-        addSection("صرفاً زیر نظر", "شرایط اولیه دارد اما هنوز نقطه ورود مناسبی نیست", watchlist.size, amber)
-        if (watchlist.isEmpty()) content.addView(tv("نماد واجد شرایط زیر نظر با داده کافی پیدا نشد.", 14f, muted))
-        else watchlist.forEachIndexed { idx, item -> addShareCard(item, idx + 1, "زیر نظر", amber) }
+        addSection("۸ نماد برتر برای بررسی", "فهرست تکمیلی رتبه‌بندی‌شده؛ موارد تکمیلی لزوماً شرایط خرید ندارند", watchlist.size, amber)
+        if (watchlist.isEmpty()) content.addView(tv("نماد قابل بررسی دریافت نشد؛ کیفیت داده بازار کافی نیست.", 14f, muted))
+        else watchlist.forEachIndexed { idx, item ->
+            val qualified = item.historyReady && item.clientDataReady && item.score >= 45 &&
+                !isBuyCandidate(item) && !isReadyForEntry(item)
+            addShareCard(item, idx + 1, if (qualified) "زیر نظر" else "بررسی اولیه؛ بدون تأیید", amber)
+        }
         content.addView(tv("سطوح حمایت و مقاومت، برآوردهای تکنیکال از داده‌های روزانه‌اند؛ قبل از معامله با نمودار و اطلاعیه‌ها تطبیق بده. حد ضرر قطعی یا تضمین‌شده نیست.", 12f, amber))
     }
 
