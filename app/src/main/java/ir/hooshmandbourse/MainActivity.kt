@@ -39,7 +39,8 @@ data class Share(
 }
 
 class MainActivity : Activity() {
-    private val pool = Executors.newSingleThreadExecutor()
+    // Market snapshot and up to five history requests run concurrently.
+    private val pool = Executors.newFixedThreadPool(6)
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
     private lateinit var refresh: Button
@@ -131,7 +132,8 @@ class MainActivity : Activity() {
                 // Fetch enough sessions to assess the medium-term trend, not just a five-day bounce.
                 // Deep-check a broader liquid universe. The remaining symbols are not claimed to have full technical validation.
                 val liquid = candidates.sortedByDescending { it.value }.take(80)
-                for (s in liquid) {
+                val historyTasks = liquid.map { s ->
+                    pool.submit {
                     // Reject thin or implausible client-type samples before using buyer power.
                     s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 &&
                         s.buyICount >= 5 && s.sellICount >= 5 &&
@@ -154,8 +156,8 @@ class MainActivity : Activity() {
                                 s.sma50 = closes.takeLast(50).average()
                                 val fiveAgo = closes[closes.size - 6]
                                 if (fiveAgo > 0) s.fiveDayReturn = (latest / fiveAgo - 1.0) * 100.0
-                                val weekly = closesNewestFirst.filterIndexed { index, _ -> index % 5 == 0 }.take(5)
-                                s.weeklyTrend = weekly.size >= 3 && weekly[0] > weekly[1] && weekly[1] > weekly[2]
+                                // Build actual calendar-week closes from daily rows; ignore the still-forming latest week.
+                                s.weeklyTrend = calculateWeeklyTrend(daily)
                                 val gains = ArrayList<Double>()
                                 val losses = ArrayList<Double>()
                                 for (i in closes.size - 14 until closes.size) {
@@ -206,7 +208,7 @@ class MainActivity : Activity() {
                                 val supportStop = if (recentLow > 0) recentLow * 0.99 else 0.0
                                 val atrStop = if (atrDistance > 0) s.entryTrigger - 2.0 * atrDistance else 0.0
                                 val proposedStop = when {
-                                    supportStop > 0 && atrStop > 0 -> max(supportStop, atrStop)
+                                    supportStop > 0 && atrStop > 0 -> min(supportStop, atrStop)
                                     supportStop > 0 -> supportStop
                                     atrStop > 0 -> atrStop
                                     else -> 0.0
@@ -230,7 +232,9 @@ class MainActivity : Activity() {
                             }
                         }
                     } catch (_: Exception) { /* missing history must not be treated as a buy signal */ }
+                    }
                 }
+                historyTasks.forEach { it.get() }
                 val analyzed = liquid.map { score(it) }
                 val scored = analyzed.filter { isBuyCandidate(it) }
                     .sortedWith(compareByDescending<Share> { it.score }.thenByDescending { it.rewardRisk }.thenByDescending { it.value }).take(5)
@@ -265,6 +269,33 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+
+    // Aggregate daily records by their actual exchange date into calendar weeks.
+    // The newest bucket is excluded because it may be an unfinished trading week.
+    private fun calculateWeeklyTrend(rowsNewestFirst: List<JSONObject>): Boolean {
+        val weekly = sortedMapOf<String, Double>()
+        val parser = java.text.SimpleDateFormat("yyyyMMdd", Locale.US)
+        parser.isLenient = false
+        for (row in rowsNewestFirst.asReversed()) {
+            val rawDate = firstString(row, "dEven", "date", "tradeDate")
+                .filter { it.isDigit() }
+            if (rawDate.length < 8) continue
+            val date = try { parser.parse(rawDate.substring(0, 8)) } catch (_: Exception) { null } ?: continue
+            val calendar = Calendar.getInstance(Locale.US)
+            calendar.time = date
+            val key = String.format(
+                Locale.US, "%04d-%02d",
+                calendar.get(Calendar.YEAR), calendar.get(Calendar.WEEK_OF_YEAR)
+            )
+            val close = firstNum(row, "pClosing", "pc")
+            if (close > 0.0) weekly[key] = close
+        }
+        val completedWeeks = weekly.values.toList().dropLast(1)
+        if (completedWeeks.size < 3) return false
+        val lastThree = completedWeeks.takeLast(3)
+        return lastThree[0] < lastThree[1] && lastThree[1] < lastThree[2]
     }
 
     private fun score(s: Share): Share {
