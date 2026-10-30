@@ -323,21 +323,44 @@ class MainActivity : Activity() {
 
     private fun calculateAdx(highs: List<Double>, lows: List<Double>, closes: List<Double>): Double {
         if (highs.size < 30 || lows.size != highs.size || closes.size != highs.size) return 0.0
-        val dxValues = ArrayList<Double>()
-        val start = max(1, highs.size - 28)
-        for (i in start until highs.size) {
+        val period = 14
+        var smoothTr = 0.0
+        var smoothPlusDm = 0.0
+        var smoothMinusDm = 0.0
+        for (i in 1..period) {
             val upMove = highs[i] - highs[i - 1]
             val downMove = lows[i - 1] - lows[i]
             val plusDm = if (upMove > downMove && upMove > 0) upMove else 0.0
             val minusDm = if (downMove > upMove && downMove > 0) downMove else 0.0
             val tr = max(highs[i] - lows[i], max(kotlin.math.abs(highs[i] - closes[i - 1]), kotlin.math.abs(lows[i] - closes[i - 1])))
-            if (tr <= 0) continue
-            val plusDi = 100.0 * plusDm / tr
-            val minusDi = 100.0 * minusDm / tr
-            val sum = plusDi + minusDi
-            if (sum > 0) dxValues.add(100.0 * kotlin.math.abs(plusDi - minusDi) / sum)
+            smoothTr += tr
+            smoothPlusDm += plusDm
+            smoothMinusDm += minusDm
         }
-        return if (dxValues.size >= 10) dxValues.takeLast(14).average() else 0.0
+        val dx = ArrayList<Double>()
+        fun appendDx() {
+            if (smoothTr <= 0.0) return
+            val plusDi = 100.0 * smoothPlusDm / smoothTr
+            val minusDi = 100.0 * smoothMinusDm / smoothTr
+            val sum = plusDi + minusDi
+            if (sum > 0.0) dx.add(100.0 * kotlin.math.abs(plusDi - minusDi) / sum)
+        }
+        appendDx()
+        for (i in period + 1 until highs.size) {
+            val upMove = highs[i] - highs[i - 1]
+            val downMove = lows[i - 1] - lows[i]
+            val plusDm = if (upMove > downMove && upMove > 0) upMove else 0.0
+            val minusDm = if (downMove > upMove && downMove > 0) downMove else 0.0
+            val tr = max(highs[i] - lows[i], max(kotlin.math.abs(highs[i] - closes[i - 1]), kotlin.math.abs(lows[i] - closes[i - 1])))
+            smoothTr = smoothTr - smoothTr / period + tr
+            smoothPlusDm = smoothPlusDm - smoothPlusDm / period + plusDm
+            smoothMinusDm = smoothMinusDm - smoothMinusDm / period + minusDm
+            appendDx()
+        }
+        if (dx.size < period) return 0.0
+        var adx = dx.take(period).average()
+        for (i in period until dx.size) adx = (adx * (period - 1) + dx[i]) / period
+        return adx
     }
 
     private fun isObvRising(closes: List<Double>, volumes: List<Double>): Boolean {
