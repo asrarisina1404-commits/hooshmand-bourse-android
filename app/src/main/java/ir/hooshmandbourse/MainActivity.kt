@@ -304,7 +304,9 @@ class MainActivity : Activity() {
 
     private fun Share.copyClientData(buyVol: Double, sellVol: Double, buyCount: Double, sellCount: Double): Share =
         Share(code, symbol, last, close, yesterday, volume, baseVolume, value,
-            buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio, score, reasons)
+            buyVol, sellVol, buyCount, sellCount, fiveDayReturn, volumeRatio,
+            sma20, sma50, rsi14, macdBullish, weeklyTrend, breakout20,
+            historyReady, true, score, reasons)
 
     private fun getText(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection)
