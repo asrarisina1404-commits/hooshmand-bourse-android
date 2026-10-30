@@ -123,7 +123,10 @@ class MainActivity : Activity() {
                 // Deep-check a broader liquid universe. The remaining symbols are not claimed to have full technical validation.
                 val liquid = candidates.sortedByDescending { it.value }.take(80)
                 for (s in liquid) {
-                    s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 && s.buyICount > 0 && s.sellICount > 0
+                    // Reject thin or implausible client-type samples before using buyer power.
+                    s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 &&
+                        s.buyICount >= 5 && s.sellICount >= 5 &&
+                        s.buyerPower.isFinite() && s.buyerPower in 0.7..3.5
                     try {
                         val history = getJson("https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceDailyList/${s.code}/80")
                         val rows = findArray(history, "closingPriceDaily")
@@ -176,7 +179,11 @@ class MainActivity : Activity() {
                 val scored = analyzed.filter { isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
                 val watchlist = analyzed.filter {
-                    it.historyReady && it.score >= 45 && !isBuyCandidate(it)
+                    val totalRetail = it.buyIVol + it.sellIVol
+                    val netPct = if (totalRetail > 0) (it.buyIVol - it.sellIVol) / totalRetail * 100 else -100.0
+                    it.historyReady && it.clientDataReady && it.score >= 45 &&
+                        netPct >= 0.0 && it.buyerPower in 0.9..3.5 &&
+                        it.rsi14 in 40.0..70.0 && !isBuyCandidate(it)
                 }.sortedByDescending { it.score }.take(8)
                 runOnUiThread {
                     render(scored, watchlist, candidates.size, liquid.size)
@@ -205,8 +212,10 @@ class MainActivity : Activity() {
         if (s.weeklyTrend) { p += 10; why.add("تأیید روند هفتگی") }
         if (netPct >= 20) { p += 15; why.add("ورود خالص قابل‌توجه پول حقیقی") }
         else if (netPct >= 8) { p += 10; why.add("برتری خرید حقیقی") }
-        if (s.buyerPower >= 1.5) { p += 10; why.add("قدرت خریدار حقیقی بالا") }
-        else if (s.buyerPower >= 1.15) { p += 6; why.add("قدرت خریدار بهتر از فروشنده") }
+        else if (netPct < 0) { p = max(0, p - 15); why.add("هشدار: خروج خالص پول حقیقی؛ امتیاز کاهشی اعمال شد") }
+        if (s.clientDataReady && s.buyerPower >= 1.5) { p += 10; why.add("قدرت خریدار حقیقی بالا") }
+        else if (s.clientDataReady && s.buyerPower >= 1.15) { p += 6; why.add("قدرت خریدار بهتر از فروشنده") }
+        else if (!s.clientDataReady) { why.add("داده حقیقی/حقوقی کم‌حجم یا نامعتبر؛ قدرت خریدار قابل اتکا نیست") }
         if (s.volumeRatio in 1.3..3.5) { p += 10; why.add("افزایش حجم معقول نسبت به میانگین") }
         if (s.breakout20) { p += 5; why.add("عبور قیمت پایانی از سقف ۲۰ روزه") }
         if (s.last >= s.close && s.close >= s.yesterday && s.yesterday > 0) { p += 5; why.add("تثبیت قیمت پایانی و آخرین معامله در محدوده مثبت") }
