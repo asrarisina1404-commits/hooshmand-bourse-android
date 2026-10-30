@@ -120,7 +120,8 @@ class MainActivity : Activity() {
                 }.toMutableList()
                 if (candidates.isEmpty()) throw Exception("دیده‌بان جایگزین TSETMC نیز نمادی برنگرداند؛ احتمالاً دسترسی شبکه یا سرویس بازار محدود است.")
                 // Fetch enough sessions to assess the medium-term trend, not just a five-day bounce.
-                val liquid = candidates.sortedByDescending { it.value }.take(35)
+                // Deep-check a broader liquid universe. The remaining symbols are not claimed to have full technical validation.
+                val liquid = candidates.sortedByDescending { it.value }.take(80)
                 for (s in liquid) {
                     s.clientDataReady = s.buyIVol > 0 && s.sellIVol > 0 && s.buyICount > 0 && s.sellICount > 0
                     try {
@@ -171,11 +172,15 @@ class MainActivity : Activity() {
                         }
                     } catch (_: Exception) { /* missing history must not be treated as a buy signal */ }
                 }
-                val scored = liquid.map { score(it) }.filter { isBuyCandidate(it) }
+                val analyzed = liquid.map { score(it) }
+                val scored = analyzed.filter { isBuyCandidate(it) }
                     .sortedByDescending { it.score }.take(5)
+                val watchlist = analyzed.filter {
+                    it.historyReady && it.score >= 45 && !isBuyCandidate(it)
+                }.sortedByDescending { it.score }.take(8)
                 runOnUiThread {
-                    render(scored, candidates.size)
-                    status.text = "داده دریافت شد • ${candidates.size} نماد بررسی شد"
+                    render(scored, watchlist, candidates.size, liquid.size)
+                    status.text = "داده دریافت شد • ${candidates.size} نماد شناسایی شد • ${liquid.size} نماد تحلیل عمیق شد"
                     refresh.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -242,30 +247,40 @@ class MainActivity : Activity() {
         return ema(macdValues, 9)
     }
 
-    private fun render(list: List<Share>, scanned: Int) {
+    private fun render(list: List<Share>, watchlist: List<Share>, scanned: Int, deeplyScanned: Int) {
         content.removeViews(3, max(0, content.childCount - 3))
-        content.addView(tv("نتیجه تحلیل: $scanned نماد بررسی شد", 14f, navy, true))
+        content.addView(tv("نتیجه تحلیل: $scanned نماد شناسایی شد؛ $deeplyScanned نماد از نظر سابقه قیمت تحلیل عمیق شدند.", 14f, navy, true))
+        content.addView(tv("سیگنال‌های خرید معتبر", 19f, navy, true))
         if (list.isEmpty()) {
-            content.addView(tv("در این نوبت نمادی از آستانه امتیاز عبور نکرد. این نتیجه بهتر از نمایش فرصت ضعیف است.", 15f))
-            return
+            content.addView(tv("فعلاً نمادی تمام شروط سخت‌گیرانه خرید را ندارد. هیچ خریدی صرفاً بر اساس امتیاز پیشنهاد نمی‌شود.", 14f, Color.rgb(130, 80, 0)))
+        } else {
+            list.forEachIndexed { idx, s -> addShareCard(s, idx + 1, "خرید معتبر", green) }
         }
-        list.forEachIndexed { idx, s ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(22, 16, 22, 16)
-                setBackgroundColor(Color.WHITE)
-                elevation = 3f
-            }
-            card.addView(tv("${idx + 1}. ${s.symbol}     امتیاز ${s.score}/100", 19f, green, true))
-            card.addView(tv("ورود خالص پول حقیقی: ${formatMoney(s.netRetailValue)} ریال", 13f))
-            card.addView(tv("قدرت خریدار/فروشنده: ${"%.2f".format(Locale.US, s.buyerPower)}", 13f))
-            card.addView(tv("تغییر پنج‌روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪  •  نسبت حجم: ${"%.1f".format(Locale.US, s.volumeRatio)}", 13f))
-            card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}  •  میانگین ۲۰روزه: ${formatMoney(s.sma20)}  •  میانگین ۵۰روزه: ${formatMoney(s.sma50)}", 12f))
-            card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 13f))
-            card.addView(tv("این رتبه‌بندی غربالگری اولیه است؛ پیش از معامله، نمودار هفتگی، اطلاعیه‌ها و وضعیت صف/نقدشوندگی را بررسی کن.", 12f, Color.rgb(130, 80, 0)))
-            val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
-            content.addView(card, lp)
+        content.addView(tv("نمادهای زیر نظر", 19f, navy, true))
+        content.addView(tv("این نمادها بعضی شرایط را دارند اما هنوز تأیید کامل خرید نگرفته‌اند؛ برای بررسی بیشتر زیر نظر باشند.", 13f))
+        if (watchlist.isEmpty()) {
+            content.addView(tv("نماد واجد شرایط زیر نظر با داده تاریخی کافی پیدا نشد.", 14f))
+        } else {
+            watchlist.forEachIndexed { idx, s -> addShareCard(s, idx + 1, "زیر نظر – هنوز خرید نیست", Color.rgb(170, 105, 20)) }
         }
+        content.addView(tv("امتیازها ابزار غربالگری‌اند، نه تضمین سود. پیش از معامله، نمودار هفتگی، اطلاعیه‌های کدال، صف و نقدشوندگی را بررسی کن.", 12f, Color.rgb(130, 80, 0)))
+    }
+
+    private fun addShareCard(s: Share, index: Int, label: String, labelColor: Int) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(22, 16, 22, 16)
+            setBackgroundColor(Color.WHITE)
+            elevation = 3f
+        }
+        card.addView(tv("$index. ${s.symbol}     امتیاز ${s.score}/100 • $label", 18f, labelColor, true))
+        card.addView(tv("ورود خالص پول حقیقی: ${formatMoney(s.netRetailValue)} ریال", 13f))
+        card.addView(tv("قدرت خریدار/فروشنده: ${"%.2f".format(Locale.US, s.buyerPower)}", 13f))
+        card.addView(tv("تغییر پنج‌روزه: ${"%.1f".format(Locale.US, s.fiveDayReturn)}٪  •  نسبت حجم: ${"%.1f".format(Locale.US, s.volumeRatio)}", 13f))
+        card.addView(tv("RSI: ${"%.1f".format(Locale.US, s.rsi14)}  •  میانگین ۲۰روزه: ${formatMoney(s.sma20)}  •  میانگین ۵۰روزه: ${formatMoney(s.sma50)}", 12f))
+        card.addView(tv("دلایل امتیاز: ${s.reasons.joinToString("، ")}", 13f))
+        val lp = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 18 }
+        content.addView(card, lp)
     }
 
 
